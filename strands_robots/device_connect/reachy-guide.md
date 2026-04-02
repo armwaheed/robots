@@ -13,8 +13,7 @@ The daemon bridges USB serial to a local REST/WebSocket API on port 9002.
 
 ```bash
 # From the repo root (uses uv inline script, auto-installs reachy-mini)
-python start_reachy_daemon.py
-```
+uv run --python 3.13 --with reachy-mini start_reachy_daemon.py```
 
 Expected output:
 
