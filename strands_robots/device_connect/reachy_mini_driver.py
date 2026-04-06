@@ -1,8 +1,13 @@
 """ReachyMiniDriver — Device Connect DeviceDriver for Pollen Reachy Mini robots.
 
-Auto-detects hardware variant via the daemon's ``wireless_version`` flag:
+By default it auto-detects the hardware variant via the daemon's
+``wireless_version`` flag:
 - **Wireless** (has onboard Pi): uses Zenoh transport for real-time I/O.
 - **Lite** (USB-only, no Pi): uses WebSocket to the daemon directly.
+
+You can override this with ``transport_mode="websocket"`` or
+``transport_mode="zenoh"`` when auto-detection is not the right choice for the
+surrounding network topology.
 
 REST API calls go through reachy_transport.api() for daemon/move operations.
 """
@@ -16,13 +21,22 @@ from typing import Optional
 from device_connect_sdk.drivers import DeviceDriver, emit, on, rpc
 from device_connect_sdk.types import DeviceIdentity, DeviceStatus
 
-from strands_robots.device_connect.reachy_transport import (
-    api,
-    rpy_to_pose,
-    identity_pose,
-    ZenohLink,
-    WebSocketLink,
-)
+try:
+    from strands_robots.device_connect.reachy_transport import (
+        api,
+        rpy_to_pose,
+        identity_pose,
+        ZenohLink,
+        WebSocketLink,
+    )
+except ImportError:
+    from reachy_transport import (  # type: ignore
+        api,
+        rpy_to_pose,
+        identity_pose,
+        ZenohLink,
+        WebSocketLink,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +55,15 @@ class ReachyMiniDriver(DeviceDriver):
         host: str = "reachy-mini.local",
         prefix: str = "reachy_mini",
         api_port: int = 8000,
+        transport_mode: str = "auto",
     ):
         super().__init__()
         self._host = host
         self._prefix = prefix
         self._api_port = api_port
+        if transport_mode not in {"auto", "websocket", "zenoh"}:
+            raise ValueError("transport_mode must be one of: auto, websocket, zenoh")
+        self._transport_mode = transport_mode
         self._latest_joints: Optional[dict] = None
         self._latest_imu: Optional[dict] = None
         self._hw = None
@@ -64,18 +82,21 @@ class ReachyMiniDriver(DeviceDriver):
         return DeviceStatus(availability="idle")
 
     async def connect(self) -> None:
-        """Connect to the Reachy Mini, auto-detecting Wireless vs Lite."""
-        try:
-            status = await asyncio.to_thread(
-                api, self._host, self._api_port, "/api/daemon/status"
-            )
-            is_lite = not status.get("wireless_version", True)
-        except Exception:
-            is_lite = False
+        """Connect to the Reachy Mini using the selected transport mode."""
+        use_websocket = self._transport_mode == "websocket"
 
-        if is_lite:
+        if self._transport_mode == "auto":
+            try:
+                status = await asyncio.to_thread(
+                    api, self._host, self._api_port, "/api/daemon/status"
+                )
+                use_websocket = not status.get("wireless_version", True)
+            except Exception:
+                use_websocket = False
+
+        if use_websocket:
             self._hw = WebSocketLink(self._host, self._api_port)
-            logger.info("Connected to Reachy Mini Lite at %s (WebSocket)", self._host)
+            logger.info("Connected to Reachy Mini at %s (WebSocket)", self._host)
         else:
             self._hw = ZenohLink(self.transport, self._prefix)
             logger.info("Connected to Reachy Mini at %s (Zenoh)", self._host)

@@ -580,6 +580,22 @@ class TestReachyMiniDriver(unittest.TestCase):
         self.assertIn("reachy_mini/joint_positions", topics)
         self.assertIn("reachy_mini/imu_data", topics)
 
+    @patch("strands_robots.device_connect.reachy_mini_driver.WebSocketLink")
+    @patch("strands_robots.device_connect.reachy_mini_driver.api")
+    def test_connect_forces_websocket_mode(self, mock_api, MockWebSocketLink):
+        mock_api.return_value = {"wireless_version": True}
+        mock_link = AsyncMock()
+        MockWebSocketLink.return_value = mock_link
+        driver = self.ReachyMiniDriver(transport_mode="websocket")
+        driver._transport = AsyncMock()
+        asyncio.run(driver.connect())
+        MockWebSocketLink.assert_called_once_with("reachy-mini.local", 8000)
+        mock_link.start.assert_awaited_once()
+
+    def test_invalid_transport_mode(self):
+        with self.assertRaises(ValueError):
+            self.ReachyMiniDriver(transport_mode="bad-mode")
+
     def test_disconnect(self):
         driver = self._make_driver()
         asyncio.run(driver.disconnect())
