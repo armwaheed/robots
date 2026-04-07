@@ -390,3 +390,7 @@ print(invoke_device('reachy-mini-1', 'look', {'pitch': -15, 'yaw': 30}))
 print(invoke_device('reachy-mini-1', 'nod'))
 "
 ```
+
+For the full Raspberry Pi setup, including the working NATS sidecar pattern
+that reuses an existing local Reachy daemon, see `reachy-guide.md` in this
+directory.
