@@ -391,6 +391,6 @@ print(invoke_device('reachy-mini-1', 'nod'))
 "
 ```
 
-For the full Raspberry Pi setup, including the working NATS sidecar pattern
-that reuses an existing local Reachy daemon, see `reachy-guide.md` in this
-directory.
+For the full Raspberry Pi setup, including the working NATS sidecar pattern,
+required `TENANT` / `DEVICE_ID` settings, and the "reuse the existing local
+Reachy daemon" flow, see `reachy-guide.md` in this directory.

@@ -97,8 +97,46 @@ export DEVICE_CONNECT_ALLOW_INSECURE=true
 python strands_robots/device_connect/run_reachy_nats.py
 ```
 
+### Configuration requirements
+
+The exact required settings depend on which broker you are trying to join.
+
+#### Public broker
+
+This configuration is enough for the public broker:
+
+```bash
+export MESSAGING_BACKEND=nats
+export NATS_URL='nats://nats-nlb-52ebd3849ae4cb02.elb.us-east-1.amazonaws.com:4222'
+export MESSAGING_URLS="$NATS_URL"
+export DEVICE_CONNECT_ALLOW_INSECURE=true
+```
+
+#### Private broker / Device Connect dashboard
+
+For the private broker that backs the Device Connect dashboard, the working
+configuration must include these parameters:
+
+```bash
+export MESSAGING_BACKEND=nats
+export NATS_URL='nats://137.184.86.16:4222'
+export MESSAGING_URLS="$NATS_URL"
+export TENANT='souravpati'
+export DEVICE_ID='reachy-mini-1'
+export NATS_CREDENTIALS_FILE='/path/to/souravpati-reachy-mini-1.creds.json'
+export DEVICE_CONNECT_ALLOW_INSECURE=true
+export REACHY_HOST='127.0.0.1'
+export REACHY_PORT='8000'
+export REACHY_TRANSPORT_MODE='websocket'
+```
+
+The critical piece is `TENANT='souravpati'`. Without that, the same device ID
+and credentials connect to the private broker but fail to register on the
+expected Device Connect subjects.
+
 By default, the runner uses:
 
+- `TENANT=default`
 - `DEVICE_ID=reachy-mini-1`
 - `REACHY_HOST=127.0.0.1`
 - `REACHY_PORT=8000`
@@ -107,10 +145,12 @@ By default, the runner uses:
 You can override them if needed:
 
 ```bash
+export TENANT='souravpati'
 export DEVICE_ID='reachy-mini-1'
 export REACHY_HOST='127.0.0.1'
 export REACHY_PORT='8000'
 export REACHY_TRANSPORT_MODE='websocket'
+export NATS_CREDENTIALS_FILE='/path/to/souravpati-reachy-mini-1.creds.json'
 python strands_robots/device_connect/run_reachy_nats.py
 ```
 
@@ -121,7 +161,7 @@ INFO - Using NATS messaging backend
 INFO - Connected to NATS broker: ['nats://nats-nlb-52ebd3849ae4cb02.elb.us-east-1.amazonaws.com:4222']
 INFO - Driver connected: reachy_mini
 INFO - Device registered: ...
-INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
+INFO - Subscribed to commands on device-connect.souravpati.reachy-mini-1.cmd
 ```
 
 ### 4. Sourav's original direct-runtime form
@@ -135,8 +175,11 @@ example to `api_port=8000`:
 cd /path/to/robots
 source .venv/bin/activate
 export MESSAGING_BACKEND=nats
-export NATS_URL='nats://nats-nlb-52ebd3849ae4cb02.elb.us-east-1.amazonaws.com:4222'
+export NATS_URL='nats://137.184.86.16:4222'
 export MESSAGING_URLS="$NATS_URL"
+export TENANT='souravpati'
+export DEVICE_ID='reachy-mini-1'
+export NATS_CREDENTIALS_FILE='/path/to/souravpati-reachy-mini-1.creds.json'
 export DEVICE_CONNECT_ALLOW_INSECURE=true
 
 python -c "
@@ -151,9 +194,11 @@ driver = ReachyMiniDriver(
 )
 runtime = DeviceRuntime(
     driver=driver,
-    device_id='reachy-mini-1',
+    device_id=os.environ['DEVICE_ID'],
+    tenant=os.environ['TENANT'],
     messaging_urls=[os.environ['NATS_URL']],
     messaging_backend='nats',
+    nats_credentials_file=os.environ['NATS_CREDENTIALS_FILE'],
     allow_insecure=True,
 )
 asyncio.run(runtime.run())
@@ -171,8 +216,9 @@ From another terminal:
 cd /path/to/robots
 source .venv/bin/activate
 export MESSAGING_BACKEND=nats
-export NATS_URL='nats://nats-nlb-52ebd3849ae4cb02.elb.us-east-1.amazonaws.com:4222'
+export NATS_URL='nats://137.184.86.16:4222'
 export MESSAGING_URLS="$NATS_URL"
+export TENANT='souravpati'
 export DEVICE_CONNECT_ALLOW_INSECURE=true
 ```
 
@@ -229,6 +275,8 @@ These are the reusable Reachy Device Connect files in this repo:
 - `permissions violation for publish to "device-connect.default.registry"`
   The credentials authenticate, but the broker ACLs do not allow Device Connect
   registration.
+- Connects but registers under the wrong tenant
+  For the private broker/dashboard path, set `TENANT='souravpati'`.
 - `Connection refused` on port `8000`
   No local Reachy daemon is running there. Either start the browser-control demo
   or run `start_reachy_daemon.py` and point the sidecar at `9002`.

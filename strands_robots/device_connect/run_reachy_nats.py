@@ -23,6 +23,7 @@ def _env(name: str, default: str) -> str:
 async def main() -> None:
     nats_url = _env("NATS_URL", "nats://localhost:4222")
     nats_credentials_file = os.environ.get("NATS_CREDENTIALS_FILE", "").strip() or None
+    tenant = _env("TENANT", "default")
     device_id = _env("DEVICE_ID", "reachy-mini-1")
     host = _env("REACHY_HOST", "127.0.0.1")
     prefix = _env("REACHY_PREFIX", "reachy_mini")
@@ -38,6 +39,7 @@ async def main() -> None:
     runtime_kwargs = {
         "driver": driver,
         "device_id": device_id,
+        "tenant": tenant,
         "messaging_backend": "nats",
         "messaging_urls": [nats_url],
         "allow_insecure": True,
