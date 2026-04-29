@@ -13,9 +13,22 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from strands.tools.tools import AgentTool
-from strands.types._events import ToolResultEvent
-from strands.types.tools import ToolSpec, ToolUse
+try:
+    from strands.tools.tools import AgentTool
+    from strands.types._events import ToolResultEvent
+    from strands.types.tools import ToolSpec, ToolUse
+except ImportError:
+    class AgentTool:
+        """Fallback stub for direct local simulation use without strands-agents."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class ToolResultEvent(dict):
+        """Fallback event container."""
+
+    ToolSpec = Dict[str, Any]
+    ToolUse = Dict[str, Any]
 
 from strands_robots.simulation._backend import _ensure_mujoco
 from strands_robots.simulation._mjcf_builder import MJCFBuilder

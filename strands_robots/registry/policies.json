@@ -13,6 +13,25 @@
         "test"
       ]
     },
+    "g1_demo": {
+      "module": "strands_robots.policies.g1_demo",
+      "class": "G1DemoPolicy",
+      "description": "Template-based natural-language demo controller for Unitree G1 in MuJoCo",
+      "requires": [],
+      "config_keys": [
+        "default_side"
+      ],
+      "defaults": {
+        "default_side": "right"
+      },
+      "aliases": [
+        "g1_demo_nl",
+        "unitree_g1_demo"
+      ],
+      "shorthands": [
+        "g1_demo"
+      ]
+    },
     "groot": {
       "module": "strands_robots.policies.groot",
       "class": "Gr00tPolicy",

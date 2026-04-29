@@ -34,6 +34,16 @@ _BUNDLED_DIR = Path(__file__).parent
 _USER_CACHE_DIR = Path.home() / ".strands_robots" / "assets"
 
 
+def _default_assets_dir_candidates() -> List[Path]:
+    """Return fallback asset-cache locations for the default configuration."""
+    tmp_root = Path(os.getenv("TMPDIR", "/tmp"))
+    return [
+        _USER_CACHE_DIR,
+        Path.cwd() / ".strands_robots" / "assets",
+        tmp_root / "strands_robots_assets",
+    ]
+
+
 def get_assets_dir() -> Path:
     """Get the primary assets directory (user cache).
 
@@ -43,10 +53,26 @@ def get_assets_dir() -> Path:
     custom = os.getenv("STRANDS_ASSETS_DIR")
     if custom:
         d = Path(custom)
-    else:
-        d = _USER_CACHE_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    last_error = None
+    for candidate in _default_assets_dir_candidates():
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if candidate != _USER_CACHE_DIR:
+                logger.warning(
+                    "Default asset cache '%s' is unavailable; using '%s' instead.",
+                    _USER_CACHE_DIR,
+                    candidate,
+                )
+            return candidate
+        except OSError as exc:
+            last_error = exc
+            logger.debug("Asset cache candidate unavailable: %s (%s)", candidate, exc)
+
+    assert last_error is not None
+    raise last_error
 
 
 def get_search_paths() -> List[Path]:
