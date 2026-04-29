@@ -177,6 +177,16 @@ script now handles that automatically.
 - Natural-language instructions can be entered live and are routed through the
   policy abstraction layer.
 
+### What the current demo looks like
+
+Interactive MuJoCo viewer:
+
+![Unitree G1 interactive MuJoCo viewer](artifacts/unitree_g1_demo/interactive-viewer.png)
+
+Interactive terminal control loop:
+
+![Unitree G1 interactive terminal commands](artifacts/unitree_g1_demo/interactive-terminal.png)
+
 ### What is still rough / not physically correct
 
 Observed issues in the current scene and controller include:
