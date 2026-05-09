@@ -8,7 +8,7 @@ bridges structured RPCs into Device Connect over NATS.
 import asyncio
 import os
 
-from device_connect_sdk import DeviceRuntime
+from strands_robots.device_connect._compat import DeviceRuntime
 
 try:
     from strands_robots.device_connect.reachy_mini_driver import ReachyMiniDriver

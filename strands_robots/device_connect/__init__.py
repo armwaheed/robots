@@ -21,8 +21,7 @@ import threading
 import uuid
 from typing import Optional
 
-from device_connect_sdk import DeviceRuntime
-
+from strands_robots.device_connect._compat import DeviceRuntime
 from strands_robots.device_connect.reachy_mini_driver import ReachyMiniDriver
 from strands_robots.device_connect.robot_driver import RobotDeviceDriver
 from strands_robots.device_connect.sim_driver import SimulationDeviceDriver

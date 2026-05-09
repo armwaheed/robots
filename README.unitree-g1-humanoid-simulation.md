@@ -11,6 +11,27 @@ manipulation with a simulated Unitree G1 EDU robot, with an interactive control
 path that follows the Strands policy abstraction layer instead of a one-off
 script.
 
+## Device Connect Dependency
+
+Device Connect is the intended networking layer for multi-robot coordination.
+The source repo is <https://github.com/Arm/device-connect>. This branch expects
+the current packages from that repo:
+
+- `device-connect-edge` for robot/device runtimes.
+- `device-connect-agent-tools` for agent-side discovery and RPC invocation.
+
+Older Strands Robots branches and notes may mention `device-connect-sdk`. This
+branch keeps a compatibility shim for that legacy package name, but new code and
+docs should prefer `device-connect-edge`.
+
+Local source install:
+
+```bash
+gh repo clone Arm/device-connect /tmp/device-connect
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
+```
+
 ## What Was Missing In The Original Strands Robots Repo
 
 The repository already contained useful building blocks:

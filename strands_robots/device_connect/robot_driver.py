@@ -7,8 +7,15 @@ structured RPCs and events via Device Connect's DeviceDriver interface.
 import asyncio
 import logging
 
-from device_connect_sdk.drivers import DeviceDriver, emit, on, periodic, rpc
-from device_connect_sdk.types import DeviceIdentity, DeviceStatus
+from strands_robots.device_connect._compat import (
+    DeviceDriver,
+    DeviceIdentity,
+    DeviceStatus,
+    emit,
+    on,
+    periodic,
+    rpc,
+)
 
 logger = logging.getLogger(__name__)
 

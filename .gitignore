@@ -9,3 +9,6 @@ build
 dist
 .strands_robots
 .coverage
+.credentials/
+DEBUG/
+.DS_Store

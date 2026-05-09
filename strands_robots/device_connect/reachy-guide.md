@@ -2,6 +2,20 @@
 
 Connect a Reachy Mini on a Raspberry Pi to a remote Device Connect NATS broker.
 
+Device Connect lives at <https://github.com/Arm/device-connect>. Use the current
+packages from that repo: `device-connect-edge` for the sidecar runtime and
+`device-connect-agent-tools` for client discovery/invocation. Older snippets may
+refer to `device-connect-sdk`; this branch keeps a compatibility shim, but new
+code should import `DeviceRuntime` from `device_connect_edge`.
+
+Local source install:
+
+```bash
+gh repo clone Arm/device-connect /tmp/device-connect
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
+```
+
 This guide covers the working setup we validated on the Pi at `10.118.156.11`:
 
 - the existing Reachy browser-control demo continues to own the local robot daemon
@@ -185,7 +199,7 @@ export DEVICE_CONNECT_ALLOW_INSECURE=true
 python -c "
 import asyncio, os
 from strands_robots.device_connect import ReachyMiniDriver
-from device_connect_sdk import DeviceRuntime
+from device_connect_edge import DeviceRuntime
 
 driver = ReachyMiniDriver(
     host='localhost',

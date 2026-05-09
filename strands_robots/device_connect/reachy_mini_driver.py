@@ -18,8 +18,7 @@ import logging
 import math
 from typing import Optional
 
-from device_connect_sdk.drivers import DeviceDriver, emit, on, rpc
-from device_connect_sdk.types import DeviceIdentity, DeviceStatus
+from strands_robots.device_connect._compat import DeviceDriver, DeviceIdentity, DeviceStatus, emit, on, rpc
 
 try:
     from strands_robots.device_connect.reachy_transport import (

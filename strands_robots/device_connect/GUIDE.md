@@ -1,8 +1,24 @@
 # Device Connect Integration
 
-Strands Robots uses [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
+Strands Robots uses [Device Connect](https://github.com/Arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
 
-> **Fallback behavior:** If `device-connect-sdk` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
+Install the current Device Connect packages from the `Arm/device-connect` repo:
+
+- `device-connect-edge` for device runtimes such as robot sidecars.
+- `device-connect-agent-tools` for agent/client discovery and RPC invocation.
+
+Older docs and branches may refer to `device-connect-sdk`. This branch keeps a compatibility shim for that legacy package name, but new code should import `DeviceRuntime` from `device_connect_edge`.
+
+> **Fallback behavior:** If Device Connect is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
+
+For local development against the Device Connect source repo, build/install the
+packages directly into this repo's virtual environment:
+
+```bash
+gh repo clone Arm/device-connect /tmp/device-connect
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
+```
 
 ### Quick Start
 
@@ -99,10 +115,10 @@ r.run()
 Expected output:
 
 ```
-device_connect_sdk.device.<PEER_ID> - INFO - Using ZENOH messaging backend
-device_connect_sdk.device.<PEER_ID> - INFO - Connected to ZENOH broker: []
-device_connect_sdk.device.<PEER_ID> - INFO - Driver connected: strands_sim
-device_connect_sdk.device.<PEER_ID> - INFO - Subscribed to commands on device-connect.default.<PEER_ID>.cmd
+device_connect_edge.device.<PEER_ID> - INFO - Using ZENOH messaging backend
+device_connect_edge.device.<PEER_ID> - INFO - Connected to ZENOH broker: []
+device_connect_edge.device.<PEER_ID> - INFO - Driver connected: strands_sim
+device_connect_edge.device.<PEER_ID> - INFO - Subscribed to commands on device-connect.default.<PEER_ID>.cmd
 🤖 <PEER_ID> is online. Ctrl+C to stop.
 ```
 
@@ -207,7 +223,7 @@ For production deployments, you can add Docker infrastructure for persistent reg
 Start the Device Connect infrastructure (Zenoh router + etcd + device registry):
 
 ```bash
-git clone --depth 1 https://github.com/arm/device-connect.git
+git clone --depth 1 https://github.com/Arm/device-connect.git
 cd device-connect/packages/device-connect-server
 docker compose -f infra/docker-compose-dev.yml up -d
 cd ../../..
@@ -323,7 +339,7 @@ Wrap Reachy Mini with `ReachyMiniDriver` to expose it as a structured Device Con
 
 ```python
 from strands_robots.device_connect import ReachyMiniDriver
-from device_connect_sdk import DeviceRuntime
+from device_connect_edge import DeviceRuntime
 
 driver = ReachyMiniDriver(host="reachy-mini.local")
 runtime = DeviceRuntime(
@@ -356,7 +372,7 @@ invoke_device("reachy-mini-1", "nod")
 python -c "
 import asyncio
 from strands_robots.device_connect import ReachyMiniDriver
-from device_connect_sdk import DeviceRuntime
+from device_connect_edge import DeviceRuntime
 
 # For Lite (USB): host='localhost' (requires reachy-mini daemon running)
 # For Wireless:  host='reachy-mini.local'
@@ -376,8 +392,8 @@ Expected output:
 
 ```
 Reachy Mini driver connected: reachy-mini.local
-device_connect_sdk.device.reachy-mini-1 - INFO - Device registered
-device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
+device_connect_edge.device.reachy-mini-1 - INFO - Device registered
+device_connect_edge.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
 ```
 
 **In another terminal, invoke RPCs:**

@@ -164,9 +164,19 @@ trainer.train()
 
 ### Networking: Device Connect
 
-Strands Robots uses [Device Connect](https://github.com/arm/device-connect) by Arm as its primary networking layer — registry-based discovery, structured RPC schemas, device-to-device events, and policy enforcement. Every `Robot()` automatically registers as a Device Connect device when `device-connect-sdk` is installed (zero configuration in D2D mode).
+Strands Robots uses [Device Connect](https://github.com/Arm/device-connect) by Arm as its primary networking layer — registry-based discovery, structured RPC schemas, device-to-device events, and policy enforcement. Install the current Device Connect packages from that repo, especially `device-connect-edge` for robot runtimes and `device-connect-agent-tools` for agent-side discovery/invocation. Every `Robot()` automatically registers as a Device Connect device when the runtime package is installed (zero configuration in D2D mode).
 
-If `device-connect-sdk` is not installed, robots fall back to a built-in Zenoh P2P mesh for basic peer discovery and coordination.
+Older docs and branches may refer to `device-connect-sdk`; this branch keeps a compatibility shim for that legacy package name but prefers `device-connect-edge`.
+
+If Device Connect is not installed, robots fall back to a built-in Zenoh P2P mesh for basic peer discovery and coordination.
+
+For local development against the Device Connect repo:
+
+```bash
+gh repo clone Arm/device-connect /tmp/device-connect
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
+.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
+```
 
 ```python
 from strands_robots.tools.robot_mesh import robot_mesh
