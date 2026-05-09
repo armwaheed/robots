@@ -22,6 +22,16 @@ acts as the task planner, and the worker robot acts as an assisting effector.
   bending at the waist, reaching, grasping, placing, and holding.
 - An intentionally imperfect sheet outcome with overhang, slack, and wrinkles.
 
+## Current Demo Snapshot
+
+![MuJoCo screenshot showing current collision and animation limitations](artifacts/unitree_g1_bed_making/missing-collision-detection-poor-animation.png)
+
+This screenshot is intentionally included as a quick visual reference for the
+current state of the demo. The scene has the two G1 robots, the bed, and the
+triangulated bedsheet, but the remaining work is to make the sheet collide with
+the bed and hands realistically and to replace the floating/spinning scripted
+robot motion with believable standing, walking, bending, and grasping.
+
 ## Device Connect
 
 Device Connect is the intended robot-to-robot coordination layer for the next
