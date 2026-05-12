@@ -22,37 +22,80 @@ acts as the task planner, and the worker robot acts as an assisting effector.
   bending at the waist, reaching, grasping, placing, and holding.
 - An intentionally imperfect sheet outcome with overhang, slack, and wrinkles.
 
-## Current Demo Snapshot
+## Current Demo Snapshots
 
-![MuJoCo screenshot showing current collision and animation limitations](artifacts/unitree_g1_bed_making/missing-collision-detection-poor-animation.png)
+Picking up a corner and lifting it over the bed:
 
-This screenshot is intentionally included as a quick visual reference for the
-current state of the demo. The scene has the two G1 robots, the bed, and the
-triangulated bedsheet, but the remaining work is to make the sheet collide with
-the bed and hands realistically and to replace the floating/spinning scripted
-robot motion with believable standing, walking, bending, and grasping.
+![Control G1 carrying a sheet corner over the bed](artifacts/unitree_g1_bed_making/snapshot-carry-corner.png)
+
+Placing the corner on the bed; the rest of the sheet drapes via cloth
+physics rather than being teleported into place:
+
+![Control G1 placing a corner; sheet draped over the bed top](artifacts/unitree_g1_bed_making/snapshot-place-corner.png)
+
+These frames are produced by the run described below. The bedsheet collides
+with the bed top, the robots stand and walk around the bed footprint without
+warping through it, and the placement after release leaves the sheet with
+realistic slack and overhang instead of pinning it to perfect bed-corner
+positions.
 
 ## Device Connect
 
-Device Connect is the intended robot-to-robot coordination layer for the next
-iteration of this demo. The library lives at
-<https://github.com/Arm/device-connect>; use `device-connect-edge` for robot
-sidecar/runtime code and `device-connect-agent-tools` for agent-side discovery
-and RPC calls.
+Two complementary surfaces are wired up:
 
-Local source install:
+1. **In-process** — `ControlPlanner` and `WorkerEffector` (in
+   `examples/unitree_g1_bed_making_demo.py`) use the same
+   `holdCorner` / `releaseCorner` / `assistPlace` / `setIdle` / `getStatus`
+   names a real Device Connect participant would. The MuJoCo demo calls
+   these locally so the simulation runs without needing a broker.
+2. **On the network** — `strands_robots/device_connect/bed_making_g1_driver.py`
+   wraps the same RPC surface as a proper `DeviceDriver`, and
+   `examples/unitree_g1_bed_making_device_connect_sidecar.py` spins up one
+   `DeviceRuntime` per robot so they appear in the Device Connect dashboard.
+
+### Robots show up while the demo is running
+
+The MuJoCo demo automatically starts a `DeviceRuntime` in a background
+thread for each robot when launched:
+
+```bash
+.venv/bin/python examples/unitree_g1_bed_making_demo.py
+```
+
+Both robots appear on the Device Connect portal's `/devices` page with
+`device_type=unitree_g1_bed_making` and online status for the duration of
+the simulation. They are cleanly unregistered when the demo exits.
+
+Defaults:
+
+- Broker: `nats://fabric.deviceconnect.dev:4222` (override with
+  `--device-connect-nats-url` or `$DEVICE_CONNECT_NATS_URL`).
+- Credentials: `.credentials/beta-unitree-g1-humanoid-0.creds.json`
+  (control) and `.credentials/beta-unitree-g1-humanoid-1.creds.json`
+  (worker). Skip with `--no-device-connect`.
+
+### Sidecar without the simulation
+
+To register the robots without running MuJoCo (e.g. for dashboard testing
+on a machine without the assets), run the sidecar directly:
+
+```bash
+.venv/bin/python examples/unitree_g1_bed_making_device_connect_sidecar.py
+```
+
+Override credentials with `--credentials role=path` (repeatable).
+
+### Use a real `device-connect-edge` install
+
+The compat shim at `strands_robots/device_connect/_compat.py` resolves to
+the installed `device_connect_edge` package — see
+<https://github.com/Arm/device-connect>. Install from source:
 
 ```bash
 gh repo clone Arm/device-connect /tmp/device-connect
 .venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
 .venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
 ```
-
-This checkpoint still coordinates the control robot and worker robot inside one
-local scripted MuJoCo process. The next Device Connect step is to split that
-scripted coordination into two registered robot devices, where the control robot
-plans the bed-making task and invokes worker robot actions such as `holdCorner`,
-`releaseCorner`, and `assistPlace` over Device Connect.
 
 ## Run
 
@@ -128,16 +171,40 @@ when rendering is available, and `summary.txt`.
 ## Current Fidelity
 
 This is a deterministic simulator demo, not a learned whole-body manipulation
-policy. The G1 bases, legs, waist, arms, wrists, and finger joints are scripted
-to make the robot roles visible. The bedsheet is still a MuJoCo flex grid, but
-the scripted task moves the cloth as a coherent triangulated surface instead of
-pinning isolated nodes. That keeps the sheet rectangle visually inextensible
-while preserving realistic imperfections such as wrinkles, sag, and uneven
-overhang.
+policy. The G1 limb joints are driven by PD position actuators against scripted
+pose targets, but the rest of the physics is now closer to a real environment:
 
-Known physics and animation gaps remain: the sheet/bed/hand contacts are not yet
-robust enough to prevent the sheet from passing through the bed, the hands do
-not physically grasp the sheet, and the G1 bases are scripted rather than driven
-by a balanced walking controller. Favor future fixes that improve realistic
-contact, locomotion, and imperfect task outcomes over visually perfect sheet
-placement.
+- **Mocap-driven floating bases.** Each G1 pelvis is welded (via a stiff MuJoCo
+  `<weld>` equality) to a mocap body that the script moves around the scene.
+  The robots do not have a balanced walking controller, but they also no longer
+  warp through the bed or fight the dynamics — the base follows a kinematic
+  target while the legs/arms remain PD-actuated.
+- **Physical sheet grasps via kinematic anchors.** The cloth is a MuJoCo
+  `flexcomp` 2D grid with edge equalities keeping it nearly inextensible.
+  Each sheet corner has a dedicated mocap "anchor" body and a corresponding
+  weld equality between the anchor and the cloth corner. To pick up a corner
+  the planner snaps the anchor to the corner's current world position, then
+  activates the weld; the cloth corner is then dragged along whatever path
+  the planner writes into the anchor's mocap pose. Releasing deactivates the
+  weld and the cloth physics finishes the placement.
+- **No path through the bed.** Walks between stations are planned to skirt the
+  bed footprint via the foot-edge waypoints rather than driving the floating
+  base straight through obstacles.
+- **Imperfect outcome.** The sheet ends up draped with the natural slack and
+  wrinkles produced by the cloth physics, not pinned to perfect bed-corner
+  positions.
+
+## Known Limitations
+
+- Cloth physics with stiff edge equalities can degenerate in the later
+  placement steps if a second corner is dragged across the bed while the
+  previously placed corner is still resting nearby. The first one or two
+  placements look the most realistic; later steps may show the sheet
+  collapsing into a sparse drape. Reducing `--phase-steps` or
+  `SHEET_GRID_X/Y` makes the run finish, but a future pass should replace
+  the flex edge equalities with the MuJoCo elasticity plugin for proper
+  cloth behaviour under multi-corner manipulation.
+- The robots use mocap-anchored floating bases for visualisation, not a
+  balanced locomotion controller. They do not generate ground reaction
+  forces or step naturally — only the upper-body PD-controlled motion is
+  physically simulated.
