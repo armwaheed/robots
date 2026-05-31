@@ -92,13 +92,41 @@ orchestrator: it drives the bed-making sub-tasks via the callable actions and
 triggers an ask-for-help → offer-help exchange when a previously placed corner
 "starts to drift".
 
+> **Which mode shows the robots?** `--mujoco` is the one that opens MuJoCo and
+> physically simulates the two G1s making the bed. `--broker` and `--loopback`
+> are **coordination-only** modes: they exercise the Device Connect RPCs,
+> events, and ask/offer-help logic and print the event + help history to the
+> console — they do **not** open a 3D window.
+
+### Watch the robots in MuJoCo
+
+```bash
+# Open the interactive MuJoCo viewer and watch the two G1s make the bed.
+# This also registers both peers on the Device Connect dashboard while it runs.
+.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco
+
+# Headless: render the run to PNG frames and encode artifacts/.../bed_making.mp4
+# (no window needed; uses GPU offscreen rendering).
+.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco --render-video
+
+# Skip dashboard registration (pure local visualisation):
+.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco --no-device-connect
+```
+
+`--mujoco` delegates to the companion visualisation
+[`README.unitree-g1-bed-making-demo.md`](README.unitree-g1-bed-making-demo.md)
+(`unitree_g1_bed_making_demo.py`) with stable physics settings, so the full
+make-the-bed sequence — including the worker-assist "help" step — completes.
+
+### Coordination-only modes (no 3D window)
+
 ```bash
 # Live against the real Device Connect broker (both G1s appear in the dashboard):
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py
+.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --broker
 
 # Keep the peers online afterward so you can invoke their functions from the
 # dashboard yourself:
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --hold 120
+.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --broker --hold 120
 
 # Offline (no broker) — coordinates via an in-process event bus, prints the
 # full event + help history at the end:

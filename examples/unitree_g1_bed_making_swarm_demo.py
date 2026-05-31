@@ -56,6 +56,8 @@ import inspect
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -332,6 +334,58 @@ async def run_broker(nats_url: str, hold: float, step_delay: float) -> int:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def run_mujoco(args: argparse.Namespace) -> int:
+    """Show the swarm physically making the bed in MuJoCo.
+
+    Delegates to the companion visualisation ``unitree_g1_bed_making_demo.py``
+    (run as a subprocess so its import-time GL/viewer setup stays isolated and
+    the two peers are registered exactly once). By default it opens the
+    interactive MuJoCo viewer and registers both peers on the Device Connect
+    dashboard; with ``--render-video`` it renders headlessly and encodes an
+    mp4 you can share.
+    """
+
+    demo = REPO_ROOT / "examples" / "unitree_g1_bed_making_demo.py"
+    cmd = [sys.executable, str(demo), "--substeps", str(args.substeps)]
+    env = dict(os.environ)
+    if args.no_device_connect:
+        cmd.append("--no-device-connect")
+    if args.render_video:
+        cmd += ["--no-viewer", "--render-frames"]
+        # GPU offscreen rendering — the interactive viewer is not used here.
+        env.setdefault("MUJOCO_GL", "egl")
+
+    print("Launching the MuJoCo bed-making visualisation:")
+    print("  " + " ".join(cmd))
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        print(f"MuJoCo visualisation exited with status {result.returncode}.", file=sys.stderr)
+        return result.returncode
+
+    if args.render_video:
+        frames = REPO_ROOT / "artifacts" / "unitree_g1_bed_making"
+        out = frames / "bed_making.mp4"
+        if shutil.which("ffmpeg") is None:
+            print(
+                f"Frames are in {frames}. Install ffmpeg to encode an mp4, or view the PNGs directly.",
+                file=sys.stderr,
+            )
+            return 0
+        encode = [
+            "ffmpeg", "-y", "-framerate", "15",
+            "-pattern_type", "glob", "-i", str(frames / "frame_*.png"),
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+        enc = subprocess.run(encode, capture_output=True, text=True)
+        if enc.returncode == 0:
+            print(f"Wrote {out}")
+        else:
+            print(f"ffmpeg encode failed; PNG frames remain in {frames}.", file=sys.stderr)
+            return enc.returncode
+    return 0
+
+
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = parser.add_mutually_exclusive_group()
@@ -344,6 +398,38 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--loopback",
         action="store_true",
         help="Run with no broker; coordinate via an in-process event bus.",
+    )
+    mode.add_argument(
+        "--mujoco",
+        action="store_true",
+        help=(
+            "Show the two G1s physically making the bed in MuJoCo (opens the "
+            "interactive viewer). This launches the companion visualisation "
+            "unitree_g1_bed_making_demo.py, which also registers both peers on "
+            "the Device Connect dashboard while it runs."
+        ),
+    )
+    parser.add_argument(
+        "--render-video",
+        action="store_true",
+        help=(
+            "With --mujoco: render the run headlessly to PNG frames and encode "
+            "an mp4 (no interactive window) instead of opening the viewer."
+        ),
+    )
+    parser.add_argument(
+        "--substeps",
+        type=int,
+        default=8,
+        help=(
+            "With --mujoco: physics substeps per control frame passed to the "
+            "visualisation. 8+ keeps the cloth-grasp solver stable (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--no-device-connect",
+        action="store_true",
+        help="With --mujoco: do not register the peers on the Device Connect dashboard.",
     )
     parser.add_argument(
         "--nats-url",
@@ -369,6 +455,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(levelname)s %(name)s %(message)s")
+    if args.mujoco:
+        return run_mujoco(args)
     if args.loopback:
         return asyncio.run(run_loopback(args.step_delay))
     return asyncio.run(run_broker(args.nats_url, args.hold, args.step_delay))

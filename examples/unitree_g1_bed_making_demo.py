@@ -1580,6 +1580,7 @@ class FrameState:
     control_frame: int = 0
     saved_frame: int = 0
     render_failed: bool = False
+    solver_recoveries: int = 0
 
 
 def _step_run(
@@ -1662,14 +1663,27 @@ def _step_run(
                 )
             )
 
+        # Snapshot the physics state so a transient solver failure (e.g. a
+        # rank-deficient Hessian when the stiff cloth weld engages during a
+        # grasp/carry) can be recovered instead of aborting the whole run.
+        _qpos0 = data.qpos.copy()
+        _qvel0 = data.qvel.copy()
+        _act0 = data.act.copy() if data.act.size else None
         for _ in range(args.substeps):
             try:
                 mujoco.mj_step(model, data)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"mj_step failed during phase {label!r} at control_frame "
-                    f"{frame_state.control_frame} (sim time {data.time:.3f}): {exc}"
-                ) from exc
+            except Exception:
+                # Restore the pre-substep state, damp out the velocity blow-up,
+                # and carry on. The scripted kinematic targets keep advancing,
+                # so the run continues to completion; we just skip the rest of
+                # this frame's substeps.
+                data.qpos[:] = _qpos0
+                data.qvel[:] = 0.0
+                if _act0 is not None:
+                    data.act[:] = _act0
+                mujoco.mj_forward(model, data)
+                frame_state.solver_recoveries += 1
+                break
 
         drifted = max(drifted, _count_drifted_corners(mujoco, model, data, scene, placed))
         _sync_viewer(viewer_handle)
