@@ -1,8 +1,22 @@
 # Unitree G1 Two-Humanoid Bed-Making Demo
 
 This demo implements the GitHub issue #2 scenario: a robotic system with two
-Unitree G1 humanoids, a bed object, and a bedsheet object. The control robot
-acts as the task planner, and the worker robot acts as an assisting effector.
+Unitree G1 humanoids, a bed object, and a bedsheet object.
+
+Following the issue feedback, the two humanoids are now **equal swarm peers**
+rather than a control robot and a worker robot. Both peers independently pursue
+the shared goal state **"the bed is made"**, and **AI Fabric acts as the swarm
+orchestrator**: every peer can *see* every other peer over
+[Arm Device Connect](https://github.com/arm/device-connect) and can **ask any
+peer for help** or **offer help** to any peer that asks. There is no
+master/worker hierarchy — coordination is peer-to-peer over Device Connect
+events, with each peer's high-level behaviours exposed as callable Device
+Connect functions.
+
+> The historical MuJoCo visualisation (`unitree_g1_bed_making_demo.py`) still
+> ships with a scripted control/worker animation for the cloth physics; the
+> **swarm coordination model** lives in the Device Connect driver and the
+> `unitree_g1_bed_making_swarm_demo.py` orchestration script described below.
 
 ## What It Builds
 
@@ -39,63 +53,15 @@ warping through it, and the placement after release leaves the sheet with
 realistic slack and overhang instead of pinning it to perfect bed-corner
 positions.
 
-## Device Connect
+## Device Connect — the swarm coordination layer
 
-Two complementary surfaces are wired up:
-
-1. **In-process** — `ControlPlanner` and `WorkerEffector` (in
-   `examples/unitree_g1_bed_making_demo.py`) use the same
-   `holdCorner` / `releaseCorner` / `assistPlace` / `setIdle` / `getStatus`
-   names a real Device Connect participant would. The MuJoCo demo calls
-   these locally so the simulation runs without needing a broker.
-2. **On the network** — `strands_robots/device_connect/bed_making_g1_driver.py`
-   wraps the same RPC surface as a proper `DeviceDriver`, and
-   `examples/unitree_g1_bed_making_device_connect_sidecar.py` spins up one
-   `DeviceRuntime` per robot so they appear in the Device Connect dashboard.
-
-### Robots show up while the demo is running
-
-The MuJoCo demo automatically starts a `DeviceRuntime` in a background
-thread for each robot when launched:
-
-```bash
-.venv/bin/python examples/unitree_g1_bed_making_demo.py
-```
-
-Both robots appear on the Device Connect portal's `/devices` page with
-`device_type=unitree_g1_bed_making` and online status for the duration of
-the simulation. They are cleanly unregistered when the demo exits.
-
-Defaults:
-
-- Broker: `nats://fabric.deviceconnect.dev:4222` (override with
-  `--device-connect-nats-url` or `$DEVICE_CONNECT_NATS_URL`).
-- Credentials: `.credentials/beta-unitree-g1-humanoid-0.creds.json`
-  (control) and `.credentials/beta-unitree-g1-humanoid-1.creds.json`
-  (worker). Skip with `--no-device-connect`.
-
-### Sidecar without the simulation
-
-To register the robots without running MuJoCo (e.g. for dashboard testing
-on a machine without the assets), run the sidecar directly:
-
-```bash
-.venv/bin/python examples/unitree_g1_bed_making_device_connect_sidecar.py
-```
-
-Override credentials with `--credentials role=path` (repeatable).
-
-### Use a real `device-connect-edge` install
-
-The compat shim at `strands_robots/device_connect/_compat.py` resolves to
-the installed `device_connect_edge` package — see
-<https://github.com/Arm/device-connect>. Install from source:
-
-```bash
-gh repo clone Arm/device-connect /tmp/device-connect
-.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-edge
-.venv/bin/python -m pip install /tmp/device-connect/packages/device-connect-agent-tools
-```
+The two G1s coordinate as an **equal-peer swarm** over
+[Arm Device Connect](https://github.com/arm/device-connect): callable
+actions (`askForHelp`, `offerHelp`, `pickUpBedSheet`, `walkToNextCorner`,
+`putDownBedSheet`, …), broadcast events, and per-peer event/help-request
+history surfaced to the dashboard. That layer — and the
+AI-Fabric-orchestrated swarm demo that drives it — is documented separately
+in **[README.unitree-g1-bed-making-swarm.md](README.unitree-g1-bed-making-swarm.md)**.
 
 ## Run
 

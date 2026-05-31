@@ -2,14 +2,43 @@
 """Register the bed-making G1s with Device Connect so they appear in the dashboard.
 
 Runs one ``DeviceRuntime`` per robot against the Device Connect NATS broker. The
-two runtimes share a single ``asyncio`` event loop. Each robot uses its own
-JWT credentials file and exposes the bed-making RPC surface
-(``holdCorner`` / ``releaseCorner`` / ``assistPlace`` / ``setIdle`` /
-``getStatus``) plus a ``stateChanged`` event.
+two runtimes share a single ``asyncio`` event loop. Each robot uses its own JWT
+credentials file and registers as an **equal swarm peer** exposing the
+bed-making swarm surface defined in
+``examples/unitree_g1_bed_making_g1_driver.py``:
 
-This sidecar does **not** run the MuJoCo simulation — it only registers the
-two robots so they show up in the dashboard. To run the MuJoCo demo, use the
-companion script ``unitree_g1_bed_making_demo.py``.
+- callable actions (``@rpc``): ``askForHelp`` / ``offerHelp`` /
+  ``pickUpBedSheet`` / ``walkToNextCorner`` / ``putDownBedSheet`` plus
+  read-only ``getStatus`` / ``getGoalState`` / ``listPeers`` /
+  ``getEventHistory`` / ``getHelpHistory`` / ``emergencyStopAll``;
+- broadcast events (``@emit``): ``helpRequested`` / ``helpOffered`` /
+  ``walkingTo`` / ``goalReached`` / ``cornerHeld`` / ``cornerPlaced`` / ...
+
+Why a separate sidecar?
+-----------------------
+The two peers only exist on the Device Connect dashboard while *some* process
+is hosting their ``DeviceRuntime``. The swarm demo
+(``unitree_g1_bed_making_swarm_demo.py``) and the MuJoCo visualisation
+(``unitree_g1_bed_making_demo.py``) host them only for the duration of their
+run, then exit and unregister the robots. This sidecar hosts the two runtimes
+**on their own**, with no simulation and no scripted scenario, so that:
+
+- the robots stay **online and idle** in the dashboard for as long as you like,
+  ready for a human or an AI Fabric orchestrator to invoke their callable
+  functions interactively (e.g. click ``askForHelp`` / ``pickUpBedSheet`` from
+  the portal, or call them via ``device-connect-agent-tools``);
+- you can bring the peers up on a machine that **cannot run the simulation**
+  (no MuJoCo assets, no GPU/GL, headless CI) — registration only needs the
+  network and the credentials;
+- you can validate Device Connect connectivity, credentials, and the dashboard
+  presence/RPC surface **in isolation** from the simulation, which makes
+  debugging broker/auth issues much easier.
+
+This sidecar does **not** run the MuJoCo simulation and does **not** drive the
+robots toward the goal. To watch the swarm reach "the bed is made" and exercise
+ask-for-help/offer-help between the peers, use
+``unitree_g1_bed_making_swarm_demo.py``; to run the MuJoCo visualisation, use
+``unitree_g1_bed_making_demo.py``.
 
 Usage:
 
@@ -33,16 +62,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import threading
+import threading  # noqa: E402
 
-from strands_robots.device_connect._compat import DeviceRuntime  # noqa: E402
-from strands_robots.device_connect.bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
+from device_connect_edge import DeviceRuntime  # noqa: E402
 
+from examples.unitree_g1_bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
 
 DEFAULT_NATS_URL = "nats://fabric.deviceconnect.dev:4222"
+# Both G1s are equal swarm peers (no control/worker split) — the role label
+# is kept only so multiple peers have distinct, readable identifiers.
 DEFAULT_CREDENTIALS = (
-    (".credentials/beta-unitree-g1-humanoid-0.creds.json", "control"),
-    (".credentials/beta-unitree-g1-humanoid-1.creds.json", "worker"),
+    (".credentials/beta-unitree-g1-humanoid-0.creds.json", "peer-0"),
+    (".credentials/beta-unitree-g1-humanoid-1.creds.json", "peer-1"),
 )
 
 
@@ -127,7 +158,11 @@ class BackgroundRuntime:
             try:
                 for spec in specs:
                     runtime = build_runtime(spec, nats_url=nats_url, tenant=tenant)
-                    self.runtimes[spec.role] = runtime
+                    # Key by device_id (peers are equal — there is no unique
+                    # "control"/"worker" role to key on) and keep a role alias
+                    # for readability/back-compat.
+                    self.runtimes[spec.device_id] = runtime
+                    self.runtimes.setdefault(spec.role, runtime)
                     self._tasks.append(
                         loop.create_task(
                             _run_runtime(spec, nats_url=nats_url, tenant=tenant, runtime=runtime),
@@ -244,9 +279,17 @@ def _device_id_from_creds(path: Path) -> str:
 
 
 def build_runtime(spec: RobotSpec, *, nats_url: str, tenant: Optional[str]) -> Any:
-    """Build a DeviceRuntime for ``spec`` ready to be run on an asyncio loop."""
+    """Build a DeviceRuntime for ``spec`` ready to be run on an asyncio loop.
 
-    driver = BedMakingG1Driver(role=spec.role, device_id=spec.device_id)
+    Every robot registers as an equal swarm ``peer`` with ``auto_offer``
+    enabled, so a free peer automatically offers help when it sees another
+    peer broadcast a ``helpRequested`` event — the swarm self-organises
+    without a central controller (AI Fabric acts as orchestrator/observer).
+    ``messaging_urls`` overrides the internal URL embedded in the credentials
+    file so the peer connects to the public fabric broker.
+    """
+
+    driver = BedMakingG1Driver(role="peer", device_id=spec.device_id, auto_offer=True)
     runtime_kwargs = {
         "driver": driver,
         "device_id": spec.device_id,

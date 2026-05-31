@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from strands_robots.device_connect.bed_making_g1_driver import (
+from examples.unitree_g1_bed_making_g1_driver import (
     BedMakingG1Driver,
     SwarmAgent,
     SwarmState,

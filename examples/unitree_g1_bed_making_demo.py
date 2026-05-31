@@ -35,8 +35,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -81,7 +80,6 @@ _maybe_reexec_with_mjpython()
 from strands_robots.simulation import _configure_gl_backend  # noqa: E402
 from strands_robots.simulation._model_registry import resolve_model  # noqa: E402
 from strands_robots.tools.download_assets import download_robots  # noqa: E402
-
 
 _configure_gl_backend()
 
@@ -991,13 +989,19 @@ class _ClothAnchorRegistry:
 
 
 def _resolve_dc_drivers(bg_runtime) -> Tuple[Any, Any]:
-    """Return (control_driver, worker_driver) from a BackgroundRuntime, or (None, None)."""
+    """Return the two swarm-peer drivers from a BackgroundRuntime, or (None, None).
+
+    The peers are equal, so this is role-agnostic: it prefers the legacy
+    ``control``/``worker`` keys if present, then falls back to the
+    ``peer-0``/``peer-1`` aliases, then to the first two distinct
+    ``DeviceRuntime`` instances registered (keyed by device_id). The first
+    returned driver is the one the demo's planner emits from; the second is
+    the assisting peer.
+    """
 
     if bg_runtime is None:
         return None, None
     runtimes = getattr(bg_runtime, "runtimes", None) or {}
-    control = runtimes.get("control")
-    worker = runtimes.get("worker")
 
     def _driver(runtime):
         if runtime is None:
@@ -1005,7 +1009,21 @@ def _resolve_dc_drivers(bg_runtime) -> Tuple[Any, Any]:
         # DeviceRuntime stores driver as _driver in current SDK.
         return getattr(runtime, "_driver", None)
 
-    return _driver(control), _driver(worker)
+    for first_key, second_key in (("control", "worker"), ("peer-0", "peer-1")):
+        first, second = runtimes.get(first_key), runtimes.get(second_key)
+        if first is not None or second is not None:
+            return _driver(first), _driver(second)
+
+    # Fall back to the first two distinct runtimes (de-duplicated, since the
+    # BackgroundRuntime stores each runtime under both its device_id and a
+    # role alias).
+    distinct: List[Any] = []
+    for runtime in runtimes.values():
+        if runtime is not None and runtime not in distinct:
+            distinct.append(runtime)
+    first = _driver(distinct[0]) if len(distinct) >= 1 else None
+    second = _driver(distinct[1]) if len(distinct) >= 2 else None
+    return first, second
 
 
 def _emit_dc_event(dc_driver, bg_runtime, event_name: str, **payload) -> None:
