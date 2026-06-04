@@ -34,7 +34,6 @@ class Coverage:
 
 # Colour heuristics (tuned for the demo's light-lilac sheet on a brown bed).
 def _masks(rgb):
-    import numpy as np
 
     r = rgb[..., 0].astype(int)
     g = rgb[..., 1].astype(int)
@@ -52,7 +51,6 @@ def estimate_coverage(rgb, coverage_threshold: float = 0.5) -> Coverage:
     ``rgb`` is an (H, W, 3) uint8 array. The bed long axis (head->foot) is
     assumed horizontal in the image (width). Returns a :class:`Coverage`.
     """
-    import numpy as np
 
     sheet, bed = _masks(rgb)
     bedtop = sheet | bed

@@ -128,7 +128,7 @@ class RobotBehaviour:
     def on_placed(self) -> None:
         """Corner placed + released."""
         label = self.active_corner
-        res = self.coord.invoke(self.idx, "putDownBedSheet", corner=label)
+        self.coord.invoke(self.idx, "putDownBedSheet", corner=label)
         self.placed.append(label)
         if self.queue and self.queue[0] == label:
             self.queue.pop(0)

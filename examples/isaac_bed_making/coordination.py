@@ -30,9 +30,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.unitree_g1_bed_making_g1_driver import (  # noqa: E402
-    BedMakingG1Driver,
     GOAL_STATE,
     SHEET_TO_BED,
+    BedMakingG1Driver,
 )
 
 DEFAULT_NATS_URL = "nats://fabric.deviceconnect.dev:4222"

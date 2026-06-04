@@ -18,10 +18,13 @@ from __future__ import annotations
 import math
 from typing import Dict, Tuple
 
-# Bed
-BED_SIZE = (2.0, 1.8, 0.5)
-BED_CENTER = (0.0, 0.0, 0.25)
-BED_TOP_Z = BED_CENTER[2] + BED_SIZE[2] / 2.0  # 0.5
+# Bed. Raised so the top sits at the height the planted G1 palms naturally reach
+# (~0.66 m) — measured: with a 0.5 m bed the palms stalled ~17 cm above the sheet
+# and the grasp could never bind. A taller bed (top ~0.66) puts the sheet within a
+# few cm of the palm so the PhysX attachment catches it.
+BED_SIZE = (2.0, 1.8, 0.66)
+BED_CENTER = (0.0, 0.0, 0.33)
+BED_TOP_Z = BED_CENTER[2] + BED_SIZE[2] / 2.0  # 0.66
 
 # Robots: (pos, yaw_deg). yaw is about Z; +90 faces +y, -90 faces -y.
 # Planted close to the bed edge (~0.15 m off the y=+/-0.9 long sides) so the
@@ -44,21 +47,31 @@ BED_CORNERS: Dict[str, Tuple[float, float, float]] = {
 
 # Per-robot reachable grab point on its near sheet edge (mid-edge, in reach of a
 # planted robot). Robot 0 works the -y edge, robot 1 the +y edge.
+# Grab target sits ~3 cm into the sheet on the bed top so the IK presses the palm
+# down onto the cloth (the IK undershoots a few cm vertically, landing it right at
+# the surface).
 GRAB_POINTS = {
-    0: (0.10, -0.82, BED_TOP_Z + 0.07),
-    1: (-0.10, 0.82, BED_TOP_Z + 0.07),
+    0: (0.10, -0.82, BED_TOP_Z - 0.03),
+    1: (-0.10, 0.82, BED_TOP_Z - 0.03),
 }
-# Where each robot tugs its grabbed edge to square the cover (slightly outward
-# + down to tuck), then a lift to smooth.
+# Where each robot tugs its grabbed edge to square the cover: a small outward +
+# downward pull that stays inside the planted arm's reach envelope.
 SMOOTH_POINTS = {
-    0: (0.10, -0.95, BED_TOP_Z + 0.02),
-    1: (-0.10, 0.95, BED_TOP_Z + 0.02),
+    0: (0.10, -0.90, BED_TOP_Z - 0.05),
+    1: (-0.10, 0.90, BED_TOP_Z - 0.05),
 }
 
 # Sheet starts draped just above the bed so it falls and covers it.
+# Particles sized to touch at rest (canonical recipe) is what drapes. We use a
+# moderately coarse grid so the particles are fat enough to read as a *thick*
+# duvet-like sheet (SHEET_THICKNESS) — a thicker collision profile is much easier
+# for the hands to catch (as in the Figure/Unitree bed-making clips). The Fabric
+# fix (read tensor cloth-view + blit) means resolution no longer affects whether
+# it renders, only how smoothly it drapes.
 SHEET_SIZE = (2.2, 2.0)
-SHEET_RES = (44, 40)
-SHEET_ORIGIN = (0.0, 0.0, BED_TOP_Z + 0.45)
+SHEET_RES = (34, 30)
+SHEET_THICKNESS = 0.06  # ~6 cm "duvet"; particle radius = thickness/2
+SHEET_ORIGIN = (0.0, 0.0, BED_TOP_Z + 0.30)
 
 # Camera: 3/4 view showing both robots and the bed.
 CAM_EYE = (3.4, -3.0, 2.4)
@@ -70,24 +83,6 @@ def yaw_to_quat(yaw_deg: float) -> Tuple[float, float, float, float]:
     """Quaternion (w,x,y,z) for a rotation of yaw_deg about +Z."""
     h = math.radians(yaw_deg) / 2.0
     return (math.cos(h), 0.0, 0.0, math.sin(h))
-
-
-def lookat_quat(eye, target, up=(0.0, 0.0, 1.0)):
-    """World orientation quaternion (w,x,y,z) for a USD camera at ``eye`` looking
-    at ``target`` (camera looks down its local -Z, +Y up)."""
-    import numpy as np
-
-    eye = np.array(eye, float); target = np.array(target, float); up = np.array(up, float)
-    f = target - eye; f /= np.linalg.norm(f)
-    r = np.cross(f, up); r /= np.linalg.norm(r)
-    u = np.cross(r, f)
-    R = np.column_stack([r, u, -f])
-    w = math.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2.0
-    w = max(w, 1e-6)
-    x = (R[2, 1] - R[1, 2]) / (4 * w)
-    y = (R[0, 2] - R[2, 0]) / (4 * w)
-    z = (R[1, 0] - R[0, 1]) / (4 * w)
-    return np.array([w, x, y, z])
 
 
 def build_scene_cfg(g1_cfg):
@@ -118,6 +113,10 @@ def build_scene_cfg(g1_cfg):
             spawn=sim_utils.CuboidCfg(
                 size=BED_SIZE,
                 collision_props=sim_utils.CollisionPropertiesCfg(),
+                # High friction so the sheet grips the bed top and does not slide
+                # off when a corner is tugged (mirrors the MuJoCo bed friction).
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=1.5, dynamic_friction=1.5, restitution=0.0),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.42, 0.30, 0.22)),
             ),
             init_state=AssetBaseCfg.InitialStateCfg(pos=BED_CENTER),

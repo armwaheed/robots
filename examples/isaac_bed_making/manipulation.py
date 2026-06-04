@@ -34,17 +34,27 @@ class ArmIK:
     def __init__(self, robot, scene, side: str, device: str):
         import torch
         from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-        from isaaclab.managers import SceneEntityCfg
 
         self._torch = torch
         self.robot = robot
         self.side = side
         self.device = device
-        cfg = SceneEntityCfg("robot", joint_names=ARM_JOINTS[side], body_names=[EE_LINK[side]])
-        cfg.resolve(scene)
-        self.cfg = cfg
-        self.ee_body_id = int(cfg.body_ids[0])
+        # Resolve joint/body indices directly off THIS robot's articulation rather
+        # than via SceneEntityCfg("robot"): the bed-making scene holds two robots
+        # ("robot_0"/"robot_1"), so there is no entity literally named "robot".
+        # find_joints(preserve_order=True) keeps ARM_JOINTS order, which the IK
+        # uses consistently for the Jacobian columns, joint_pos, and the target.
+        self.joint_ids, _ = robot.find_joints(ARM_JOINTS[side], preserve_order=True)
+        body_ids, _ = robot.find_bodies([EE_LINK[side]], preserve_order=True)
+        self.ee_body_id = int(body_ids[0])
         self.ej = self.ee_body_id - 1 if robot.is_fixed_base else self.ee_body_id
+        # Palm link name varies by hand (Dex3 vs Inspire); fall back to the wrist
+        # EE link if the named palm link isn't present.
+        try:
+            palm_ids, _ = robot.find_bodies([PALM_LINK[side]], preserve_order=True)
+        except Exception:
+            palm_ids = []
+        self.palm_body_id = int(palm_ids[0]) if palm_ids else self.ee_body_id
         self.ik = DifferentialIKController(
             DifferentialIKControllerCfg(command_type="position", use_relative_mode=False, ik_method="dls"),
             num_envs=robot.num_instances if hasattr(robot, "num_instances") else 1,
@@ -71,14 +81,59 @@ class ArmIK:
         """Advance one IK step toward the target. Returns distance-to-target (m)."""
         if self.target is None:
             return None
-        jac = self.robot.root_physx_view.get_jacobians()[:, self.ej, :, self.cfg.joint_ids]
+        jac = self.robot.root_physx_view.get_jacobians()[:, self.ej, :, self.joint_ids]
         pw, qw = self._ee()
-        jpd = self.ik.compute(pw, qw, jac, self.robot.data.joint_pos[:, self.cfg.joint_ids])
-        self.robot.set_joint_position_target(jpd, joint_ids=self.cfg.joint_ids)
+        jpd = self.ik.compute(pw, qw, jac, self.robot.data.joint_pos[:, self.joint_ids])
+        self.robot.set_joint_position_target(jpd, joint_ids=self.joint_ids)
         return float(self._torch.norm(pw[0] - self.target[0]).item())
 
     def ee_pos(self) -> List[float]:
         return [float(x) for x in self._ee()[0][0].tolist()]
 
+    def palm_pos(self) -> List[float]:
+        """World position of the hand palm link (where the cloth grasp binds)."""
+        p = self.robot.data.body_pose_w[:, self.palm_body_id]
+        return [float(x) for x in p[0, 0:3].tolist()]
+
     def palm_path(self, robot_prim_path: str) -> str:
         return f"{robot_prim_path}/{PALM_LINK[self.side]}"
+
+
+def apply_hand_friction(stage, robot_prim_path: str, side: str,
+                        static_friction: float = 2.5, dynamic_friction: float = 2.5) -> int:
+    """Give the hand's colliders a high-friction ("rubberized palm/fingertips")
+    material so the hand grips the cloth by *friction* — no kinematic attachment.
+    Binds the material to every collider under the hand/wrist subtree. Returns the
+    number of colliders bound."""
+    import isaaclab.sim as sim_utils
+    from omni.physx.scripts import physicsUtils
+    from pxr import UsdPhysics
+
+    mat_path = f"{robot_prim_path}/grip_material_{side}"
+    if not stage.GetPrimAtPath(mat_path):
+        cfg = sim_utils.RigidBodyMaterialCfg(
+            static_friction=static_friction, dynamic_friction=dynamic_friction, restitution=0.0)
+        cfg.func(mat_path, cfg)
+
+    bound = []
+    # Inspire fingers use an R_/L_ prefix (e.g. "R_index_proximal", "R_thumb_distal");
+    # Dex3 uses "{side}_hand_*". Match the wrist + both naming styles so the whole
+    # gripping surface (palm + fingertips) gets the rubberized material.
+    sp = "R_" if side == "right" else "L_"
+    want = (f"{side}_hand", f"{side}_wrist",
+            f"{sp}index", f"{sp}middle", f"{sp}thumb", f"{sp}ring", f"{sp}pinky")
+    for prim in stage.Traverse():
+        path = prim.GetPath().pathString
+        if not path.startswith(robot_prim_path):
+            continue
+        if not any(w in path for w in want):
+            continue
+        # Bind to the actual collider geometry (collision meshes) and to any prim
+        # carrying a collision API — covers both how the G1 hand colliders appear.
+        if prim.HasAPI(UsdPhysics.CollisionAPI) or "collision" in path.lower() or prim.GetTypeName() == "Mesh":
+            try:
+                physicsUtils.add_physics_material_to_prim(stage, prim, mat_path)
+                bound.append(path)
+            except Exception:
+                pass
+    return bound
