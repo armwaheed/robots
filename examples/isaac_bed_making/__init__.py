@@ -11,6 +11,8 @@ Modules:
 * :mod:`cloth`        — PhysX particle-cloth bedsheet + grasp attachment.
 * :mod:`coordination` — in-process Device Connect swarm of two G1 peers.
 * :mod:`behavior`     — per-robot autonomous state machine (non-scripted).
+* :mod:`replay`       — drive the arms from a real recorded bed-making trajectory.
 * :mod:`scene`        — build the room/bed/sheet/robots in Isaac Sim.
 * ``demo.py``         — entrypoint: ``isaaclab.sh -p examples/isaac_bed_making/demo.py``.
+* ``tools/extract_trajectory.py`` — regenerate ``data/bed_making_traj.npz`` from the dataset.
 """

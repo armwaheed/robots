@@ -52,7 +52,13 @@ def parse_args():
     p.add_argument("--render", action="store_true", help="Capture frames and encode an mp4.")
     p.add_argument("--frames-dir", default=str(REPO_ROOT / "artifacts" / "isaac_bed_making"))
     p.add_argument("--nats-url", default=os.environ.get("DEVICE_CONNECT_NATS_URL", "nats://fabric.deviceconnect.dev:4222"))
-    p.add_argument("--max-seconds", type=float, default=60.0, help="Safety cap on sim wall-time.")
+    p.add_argument("--max-seconds", type=float, default=90.0, help="Safety cap on sim wall-time.")
+    p.add_argument("--scripted", action="store_true",
+                   help="Use the old scripted reach/drag waypoints instead of the dataset replay.")
+    p.add_argument("--replay-speed", type=float, default=1.0,
+                   help="Playback speed of the recorded motion (1.0 = real time).")
+    p.add_argument("--lag", type=float, default=0.4,
+                   help="Seconds robot 1 trails robot 0 in the replay (so the peers look independent).")
     return p.parse_known_args()[0]
 
 
@@ -226,13 +232,98 @@ def main() -> int:
             parts.append(f"r{i}_palm=({pp[0]:.2f},{pp[1]:.2f},{pp[2]:.2f}) gap={gap:.3f}")
         print("  ".join(parts), flush=True)
 
+    def run_replay():
+        """Drive both G1 arms from a REAL recorded bed-making trajectory (the
+        Unitree ``G1_WBT_Brainco_Make_The_Bed`` dataset) instead of scripted
+        waypoints. The two peers replay the same motion; robot 1's 180° spawn
+        rotation makes it a mirrored peer, and ``--lag`` desynchronises them."""
+        from examples.isaac_bed_making.replay import TrajectoryReplay
+        reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)}
+        N = reps[0].n_frames
+        spf = max(1, round((1.0 / sim_dt) / reps[0].fps / max(0.1, ARGS.replay_speed)))
+        lag = int(ARGS.lag * reps[0].fps)
+        cap_every = max(1, N // 170)
+        print(f"[demo] replaying real bed-making motion (episode {reps[0].source_episode}, "
+              f"{N} frames @ {reps[0].fps}fps, {spf} sim steps/frame, lag {lag}f)", flush=True)
+        if reps[0].missing:
+            print(f"[demo] joints not on this robot (skipped): {reps[0].missing}", flush=True)
+        if coord:
+            coord.invoke(0, "pickUpBedSheet", corner="A")
+            coord.invoke(1, "pickUpBedSheet", corner="B")
+        # Ease both arms from their rest pose into the first recorded pose so the
+        # arm doesn't snap (the PD target would otherwise jump in one step).
+        for w in range(40):
+            reps[0].warmup((w + 1) / 40.0)
+            reps[1].warmup((w + 1) / 40.0)
+            step()
+            if w % 8 == 0:
+                capture()
+        diag("warmed into first recorded pose")
+        mid_done = False
+        for i in range(N + lag):
+            reps[0].apply(i)
+            reps[1].apply(i - lag)
+            step(spf)
+            if i % cap_every == 0:
+                capture()
+            if coord and not mid_done and i >= N // 2:
+                # Halfway through, the peers report progress and one asks the other
+                # to help square its side — real Device Connect coordination layered
+                # over the real motion.
+                coord.invoke(0, "walkToNextCorner", direction="counterclockwise")
+                coord.invoke(1, "walkToNextCorner", direction="counterclockwise")
+                coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
+                coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
+                mid_done = True
+            if state["t"] > ARGS.max_seconds:
+                break
+        if coord:
+            coord.invoke(0, "putDownBedSheet", corner="A")
+            coord.invoke(1, "putDownBedSheet", corner="B")
+        diag("after replay")
+        capture()
+
+    def run_scripted():
+        """Legacy placeholder choreography: each planted peer presses a palm onto
+        its near sheet edge and drags it smooth by friction. Kept behind
+        ``--scripted`` for comparison; the dataset replay is the real motion."""
+        grab = scenemod.GRAB_POINTS
+        smooth = scenemod.SMOOTH_POINTS
+        if coord:
+            coord.invoke(0, "pickUpBedSheet", corner="A")
+            coord.invoke(1, "pickUpBedSheet", corner="B")
+        print("[demo] both peers press a palm onto their side of the sheet…")
+        d0, d1 = reach_both(grab[0], grab[1], tol=0.05, max_steps=320)
+        print(f"[diag] reach press: ik_dist=({d0},{d1})", flush=True)
+        diag("palms pressed on sheet")
+        capture()
+        if coord:
+            coord.invoke(0, "walkToNextCorner", direction="counterclockwise")
+            coord.invoke(1, "walkToNextCorner", direction="counterclockwise")
+        print("[demo] both peers smooth the cover (friction drag)…")
+        sd0, sd1 = reach_both(smooth[0], smooth[1], tol=0.06, max_steps=260)
+        print(f"[diag] reach smooth: ik_dist=({sd0},{sd1})", flush=True)
+        diag("after smoothing drag")
+        if coord:
+            coord.invoke(0, "putDownBedSheet", corner="A")
+            coord.invoke(1, "putDownBedSheet", corner="B")
+        capture()
+        if coord:
+            print("[demo] robot 0 asks the swarm for help smoothing its side…")
+            coord.invoke(0, "askForHelp", corner="A", reason="my side still needs smoothing")
+            help_pt = (grab[0][0], grab[0][1] + 0.12, grab[0][2])
+            reach(1, help_pt, tol=0.07, max_steps=240)
+            diag("after help smoothing")
+            step(10)
+            capture()
+
     # Register the cloth in physics (one step) then open a tensor view so we can
     # read its live deformed positions (GPU pipeline doesn't sync them to USD).
     step(1)
     cloth_view = clothmod.make_cloth_view("/World/Sheet")
     mark("cloth tensor view ready")
 
-    # ── choreography (sequence gated by IK convergence + DC, not a fixed clock) ──
+    # ── settle the draped sheet onto the bed, then make it ──
     print("[demo] settling the bedsheet onto the bed…")
     for _ in range(160):
         step()
@@ -240,44 +331,10 @@ def main() -> int:
             capture()
     diag("after settle")
 
-    # Each robot's near grab point + its smoothing pull point (from scene geometry).
-    grab = scenemod.GRAB_POINTS
-    smooth = scenemod.SMOOTH_POINTS
-
-    # 1) Both peers reach down and PRESS a palm onto their near edge of the sheet.
-    if coord:
-        coord.invoke(0, "pickUpBedSheet", corner="A")
-        coord.invoke(1, "pickUpBedSheet", corner="B")
-    print("[demo] both peers press a palm onto their side of the sheet…")
-    d0, d1 = reach_both(grab[0], grab[1], tol=0.05, max_steps=320)
-    print(f"[diag] reach press: ik_dist=({d0},{d1})", flush=True)
-    diag("palms pressed on sheet")
-    capture()
-
-    # 2) Both drag their palm outward to smooth/spread the cover. The rubberized
-    #    palms grip the cloth by friction and drag it taut — no kinematic grasp.
-    if coord:
-        coord.invoke(0, "walkToNextCorner", direction="counterclockwise")
-        coord.invoke(1, "walkToNextCorner", direction="counterclockwise")
-    print("[demo] both peers smooth the cover (friction drag)…")
-    sd0, sd1 = reach_both(smooth[0], smooth[1], tol=0.06, max_steps=260)
-    print(f"[diag] reach smooth: ik_dist=({sd0},{sd1})", flush=True)
-    diag("after smoothing drag")
-    if coord:
-        coord.invoke(0, "putDownBedSheet", corner="A")
-        coord.invoke(1, "putDownBedSheet", corner="B")
-    capture()
-
-    # 3) Robot 0 asks the swarm for help finishing its side; robot 1 (auto_offer)
-    #    reaches across and smooths robot 0's near edge too.
-    if coord:
-        print("[demo] robot 0 asks the swarm for help smoothing its side…")
-        coord.invoke(0, "askForHelp", corner="A", reason="my side still needs smoothing")
-        help_pt = (grab[0][0], grab[0][1] + 0.12, grab[0][2])
-        reach(1, help_pt, tol=0.07, max_steps=240)
-        diag("after help smoothing")
-        step(10)
-        capture()
+    if ARGS.scripted:
+        run_scripted()
+    else:
+        run_replay()
 
     # settle + final frames
     for _ in range(80):

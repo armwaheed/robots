@@ -19,3 +19,5 @@ artifacts/unitree_g1_bed_making/unitree_g1_bed_making_scene.xml
 artifacts/unitree_g1_bed_making/meshes/
 artifacts/unitree_g1_demo/frame_*.png
 artifacts/unitree_g1_demo/summary.txt
+artifacts/isaac_bed_making/frame_*.png
+artifacts/isaac_bed_making/isaac_bed_making.mp4
