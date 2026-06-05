@@ -1,34 +1,36 @@
-"""Two Unitree G1 humanoids autonomously make a bed in NVIDIA Isaac Sim,
-coordinating as equal peers over Arm Device Connect.
+"""Two Unitree G1 humanoids make a bed in NVIDIA Isaac Sim, coordinating as equal
+peers over Arm Device Connect.
 
-Run it with the Isaac Lab Python on the DGX Spark::
+End to end, each G1:
 
-    cd ~/IsaacLab
+1. **Walks in** from ~0.5 m off its side of the bed under a **learned RL
+   locomotion policy** (Isaac Lab's pretrained agile policy — issue #2 item #4),
+   balancing on its legs while tracking a velocity command.
+2. **Settles** at the bedside (its base is then held steady), and
+3. **Makes the bed** by replaying **real recorded arm motion** from Unitree's
+   teleoperated bed-making dataset (waist + both arms, with Inspire 5-finger
+   hands), gripping the cloth by friction.
+
+The bed has a **headboard + pillows** (static; never touched) and a
+**particle-cloth sheet** sized to overhang the sides + foot by ~9 inches; it
+starts **folded over at the foot** and the robots arrange it.
+
+Coordination is real Device Connect: each robot claims work, emits events, and
+asks for / offers help. With ``--broker`` both peers register live on the
+dashboard.
+
+Run with the Isaac Lab Python on the DGX Spark::
+
+    cd ~/workspaces/git/IsaacLab
     export LD_PRELOAD="$LD_PRELOAD:/lib/aarch64-linux-gnu/libgomp.so.1"
-    ./isaaclab.sh -p ~/workspaces/git/robots/examples/isaac_bed_making/demo.py \
-        --loopback --render
-
-What it shows:
-
-* Two G1s with **Inspire 5-finger hands**, planted at opposite long sides of a
-  bed, with a thick PhysX particle-cloth "duvet" that drapes over it.
-* Each G1 runs its own loop: it reaches its near edge of the sheet with
-  world-frame differential IK and presses/drags it smooth with **rubberized,
-  high-friction hands** (the cloth is gripped by friction, not a kinematic
-  attachment) — both peers working in parallel, like the Figure Helix clip.
-* Coordination is real Device Connect: each robot claims its work and emits
-  events; when one needs help its peer **offers help** and reaches across. With
-  ``--broker`` both peers register live on the dashboard (callable functions,
-  event stream).
+    ./isaaclab.sh -p ~/workspaces/git/robots/examples/isaac_bed_making/demo.py --loopback --render
 
 Rendering note: on the GPU PhysX pipeline, particle-cloth deformation is not
 synced to USD/Fabric, so the demo runs with ``use_fabric=False`` and blits the
-live cloth positions (read from a PhysX tensor cloth-view) into the visual mesh
-each frame — otherwise the camera would show a flat, undeformed sheet.
+live cloth positions (read from a PhysX tensor cloth-view) into the visual mesh.
 
-This is a self-contained example: it does not modify ``strands_robots`` or Arm's
-Device Connect. It reuses the swarm driver from
-``examples/unitree_g1_bed_making_g1_driver.py``.
+Self-contained: does not modify ``strands_robots`` or Arm's Device Connect; reuses
+the swarm driver from ``examples/unitree_g1_bed_making_g1_driver.py``.
 """
 
 from __future__ import annotations
@@ -49,16 +51,18 @@ def parse_args():
     mode.add_argument("--loopback", action="store_true", help="Coordinate via in-process bus (offline, default).")
     mode.add_argument("--broker", action="store_true", help="Register both peers on the real Device Connect NATS fabric.")
     p.add_argument("--no-device-connect", action="store_true", help="Skip Device Connect entirely.")
+    p.add_argument("--gui", action="store_true",
+                   help="Open the Isaac Sim window to watch live (instead of headless).")
     p.add_argument("--render", action="store_true", help="Capture frames and encode an mp4.")
     p.add_argument("--frames-dir", default=str(REPO_ROOT / "artifacts" / "isaac_bed_making"))
     p.add_argument("--nats-url", default=os.environ.get("DEVICE_CONNECT_NATS_URL", "nats://fabric.deviceconnect.dev:4222"))
-    p.add_argument("--max-seconds", type=float, default=90.0, help="Safety cap on sim wall-time.")
-    p.add_argument("--scripted", action="store_true",
-                   help="Use the old scripted reach/drag waypoints instead of the dataset replay.")
-    p.add_argument("--replay-speed", type=float, default=1.0,
-                   help="Playback speed of the recorded motion (1.0 = real time).")
-    p.add_argument("--lag", type=float, default=0.4,
-                   help="Seconds robot 1 trails robot 0 in the replay (so the peers look independent).")
+    p.add_argument("--max-seconds", type=float, default=120.0, help="Safety cap on sim wall-time.")
+    p.add_argument("--no-walk", action="store_true", help="Skip the learned approach-walk (spawn at the bedside).")
+    p.add_argument("--walk-only", action="store_true", help="Stop after the approach-walk (debug the locomotion).")
+    p.add_argument("--replay", action="store_true",
+                   help="Use the open-loop dataset arm replay instead of closed-loop corner manipulation.")
+    p.add_argument("--replay-speed", type=float, default=1.0, help="Playback speed of the recorded arm motion.")
+    p.add_argument("--lag", type=float, default=0.4, help="Seconds robot 1 trails robot 0 in the replay.")
     return p.parse_known_args()[0]
 
 
@@ -67,7 +71,7 @@ ARGS = parse_args()
 # ── Launch the simulator first (Isaac Lab requires this before other imports) ──
 from isaaclab.app import AppLauncher  # noqa: E402
 
-app_launcher = AppLauncher({"headless": True, "enable_cameras": bool(ARGS.render)})
+app_launcher = AppLauncher({"headless": not ARGS.gui, "enable_cameras": bool(ARGS.render or ARGS.gui)})
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils  # noqa: E402
@@ -78,8 +82,13 @@ from isaaclab.scene import InteractiveScene  # noqa: E402
 from isaaclab_assets.robots.unitree import G1_INSPIRE_FTP_CFG  # noqa: E402
 
 from examples.isaac_bed_making import cloth as clothmod  # noqa: E402
+from examples.isaac_bed_making import locomotion as locomod  # noqa: E402
 from examples.isaac_bed_making import scene as scenemod  # noqa: E402
 from examples.isaac_bed_making.manipulation import ArmIK, apply_hand_friction  # noqa: E402
+from examples.isaac_bed_making.replay import TrajectoryReplay  # noqa: E402
+
+SIM_DT = 1 / 200          # the agile locomotion policy's native rate
+DECIMATION = 4            # policy/control runs every 4 sim steps (~50 Hz)
 
 
 def main() -> int:
@@ -89,78 +98,75 @@ def main() -> int:
     def mark(msg):
         print(f"[setup] {msg}", flush=True)
 
-    # ── scene ── (Inspire 5-finger hands: more contact area for the friction grip,
-    # and matches the 5-finger hardware of the UnifoLM bed-making dataset)
-    mark("building scene cfg")
+    mark("building scene cfg (Inspire 5-finger G1s, headboard + pillows)")
     SceneCfg = scenemod.build_scene_cfg(G1_INSPIRE_FTP_CFG)
-    # use_fabric=False so the renderer reads USD: PhysX particle-cloth deformation
-    # is not synced through Fabric on the GPU pipeline, so we blit the live cloth
-    # positions into the mesh ourselves (see cloth.sync_mesh_from_view).
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1 / 120, device="cuda:0", use_fabric=False))
-    mark("instantiating InteractiveScene (2 G1s + bed)")
-    scene = InteractiveScene(SceneCfg(num_envs=1, env_spacing=6.0))
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=SIM_DT, device="cuda:0", use_fabric=False))
+    scene = InteractiveScene(SceneCfg(num_envs=1, env_spacing=8.0))
     mark("scene built")
 
-    # Rubberized, high-friction hands so the palms/fingers grip the cloth by
-    # friction (no kinematic attachment). MUST be done BEFORE sim.reset(): binding
-    # a material to a collider after reset deletes a shape in use by the physics
-    # tensor view and invalidates it.
     pre_stage = omni.usd.get_context().get_stage()
-    nb = [apply_hand_friction(pre_stage, f"/World/envs/env_0/Robot_{i}", "right") for i in (0, 1)]
-    mark(f"hand friction bound to {len(nb[0])}+{len(nb[1])} colliders"
-         + (f"; e.g. {nb[0][0]}" if nb[0] else ""))
+    # (1) Turn each Inspire G1 into a FLOATING-base articulation so the policy can
+    # walk it (the USD ships fixed-base; see locomotion.make_floating_base), and
+    # (2) rubberize the hands so they grip the cloth by friction. Both edit the
+    # stage and MUST happen before sim.reset().
+    for i in (0, 1):
+        rp = f"/World/envs/env_0/Robot_{i}"
+        locomod.make_floating_base(pre_stage, rp)
+    # Moderate (not sticky) hand friction: the hands *smooth/press* the draped
+    # sheet rather than grabbing and lifting it (high friction yanks it off the bed).
+    nb = [apply_hand_friction(pre_stage, f"/World/envs/env_0/Robot_{i}", "right",
+                              static_friction=1.2, dynamic_friction=1.2) for i in (0, 1)]
+    mark(f"floating base set; hand friction bound to {len(nb[0])}+{len(nb[1])} colliders")
 
     cam = None
-    if ARGS.render:
+    if ARGS.render or ARGS.gui:
         from isaaclab.sensors.camera import Camera, CameraCfg
         cam = Camera(cfg=CameraCfg(
             prim_path="/World/CameraSensor", update_period=0,
             height=scenemod.CAM_RES[1], width=scenemod.CAM_RES[0], data_types=["rgb"],
             spawn=sim_utils.PinholeCameraCfg(focal_length=22.0, focus_distance=400.0,
                                              horizontal_aperture=20.955, clipping_range=(0.05, 1.0e5))))
-        mark("camera created")
 
     mark("calling sim.reset()")
     sim.reset()
-    mark("sim.reset() returned")
     stage = omni.usd.get_context().get_stage()
     robots = [scene["robot_0"], scene["robot_1"]]
     sim_dt = sim.get_physics_dt()
-
     if cam is not None:
         cam.set_world_poses_from_view(torch.tensor([scenemod.CAM_EYE], device=sim.device),
                                       torch.tensor([scenemod.CAM_TARGET], device=sim.device))
 
-    # ── cloth bedsheet ──
+    # ── learned locomotion (shared pretrained agile policy) ──
+    agile = locomod.load_agile_policy(sim.device)
+    locos = {i: locomod.LocomotionPolicy(robots[i], sim.device, agile) for i in (0, 1)}
+    mark("agile locomotion policy ready")
+
+    # ── folded bedsheet ──
     scene_path = clothmod.find_physics_scene_path(stage)
     clothmod.enable_gpu_dynamics(stage, scene_path)
-    mark(f"building bedsheet (res {scenemod.SHEET_RES})")
-    sheet = clothmod.build_bedsheet(stage, scene_path, "/World/Sheet",
-                                    size=scenemod.SHEET_SIZE, resolution=scenemod.SHEET_RES,
-                                    origin=scenemod.SHEET_ORIGIN, color=(0.86, 0.86, 0.92),
-                                    thickness=scenemod.SHEET_THICKNESS)
-    mark("bedsheet built")
+    sheet = clothmod.build_bedsheet(
+        stage, scene_path, "/World/Sheet",
+        size=scenemod.SHEET_SIZE, resolution=scenemod.SHEET_RES,
+        origin=scenemod.SHEET_ORIGIN, color=(0.86, 0.86, 0.92),
+        thickness=scenemod.SHEET_THICKNESS, fold=True,
+        fold_start=scenemod.SHEET_FOLD_START)
+    mark("folded bedsheet built")
 
-    # ── arms ──
-    arms = {0: ArmIK(robots[0], scene, "right", sim.device),
-            1: ArmIK(robots[1], scene, "right", sim.device)}
-    mark("arm IK ready")
+    # ── manipulation: closed-loop arm IK (default) + optional dataset replay ──
+    arms = {i: ArmIK(robots[i], scene, "right", sim.device) for i in (0, 1)}
+    reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)} if ARGS.replay else {}
 
     # ── Device Connect swarm ──
     coord = None
     if not ARGS.no_device_connect:
         from examples.isaac_bed_making.coordination import SwarmCoordinator
         coord = SwarmCoordinator(mode="broker" if ARGS.broker else "loopback", nats_url=ARGS.nats_url)
-        ids = coord.start()
-        print(f"[demo] Device Connect swarm online ({coord.mode}): {ids}")
+        print(f"[demo] Device Connect swarm online ({coord.mode}): {coord.start()}")
 
-    # ── helpers ──
     state = {"frame": 0, "t": 0.0}
-    cloth_view = None  # PhysX tensor view; set once the cloth is registered
+    cloth_view = None
 
     def step(n=1):
-        # Step physics WITHOUT rendering every frame (rendering 2 robots + cloth
-        # each step is the bottleneck); we render only when capturing.
         for _ in range(n):
             scene.write_data_to_sim()
             sim.step(render=False)
@@ -170,12 +176,12 @@ def main() -> int:
     def capture():
         if cam is None:
             return
-        # Blit live (deformed) cloth particle positions into the visual mesh so
-        # the render shows the real draping sheet, not the stale authored mesh.
         if cloth_view is not None:
             clothmod.sync_mesh_from_view(cloth_view, sheet.mesh)
-        sim.render()
+        sim.render()  # updates the live GUI viewport too, when --gui
         cam.update(dt=sim_dt)
+        if not ARGS.render:
+            return  # GUI-only: shown live, nothing to save
         out = cam.data.output["rgb"]
         if out is None or out.shape[0] == 0:
             return
@@ -183,193 +189,262 @@ def main() -> int:
         from PIL import Image
         Image.fromarray(rgb).save(frames_dir / f"frame_{state['frame']:04d}.png")
         state["frame"] += 1
-        if state["frame"] % 10 == 0:
+        if state["frame"] % 20 == 0:
             print(f"[demo] captured {state['frame']} frames (t={state['t']:.1f}s)", flush=True)
 
-    def reach(idx, target, tol=0.06, max_steps=300, cap_every=10):
-        """Drive robot idx's arm to a world target until within tol or timeout."""
-        arms[idx].set_target(list(target))
-        d = None
-        for s in range(max_steps):
-            d = arms[idx].tick()
-            step()
-            if cap_every and s % cap_every == 0:
+    def control(cmd_fn, n_ctl, cap_every=2):
+        """Run the locomotion policy for n_ctl control steps (each = DECIMATION sim
+        steps). ``cmd_fn(i)`` returns (command, arrived) for robot i. Stops early
+        when both robots report arrived."""
+        for c in range(n_ctl):
+            arrived = []
+            for i in (0, 1):
+                cmd, arr = cmd_fn(i)
+                locos[i].act(cmd)
+                arrived.append(arr)
+            step(DECIMATION)
+            if c % cap_every == 0:
                 capture()
-            if d is not None and d < tol:
-                break
-            if state["t"] > ARGS.max_seconds:
-                break
-        return d
+            if all(arrived) or state["t"] > ARGS.max_seconds:
+                return c
+        return n_ctl
 
-    def reach_both(t0, t1, tol=0.06, max_steps=300):
-        """Drive both arms toward their targets in parallel."""
-        arms[0].set_target(list(t0))
-        arms[1].set_target(list(t1))
-        d0 = d1 = None
-        for s in range(max_steps):
-            d0 = arms[0].tick()
-            d1 = arms[1].tick()
-            step()
-            if s % 10 == 0:
-                capture()
-            if (d0 or 9) < tol and (d1 or 9) < tol:
-                break
-            if state["t"] > ARGS.max_seconds:
-                break
-        return d0, d1
+    # Register the cloth in physics, open a tensor view for live positions.
+    step(1)
+    cloth_view = clothmod.make_cloth_view("/World/Sheet")
+
+    body_ids = {}
+
+    def _bid(i, name):
+        key = (i, name)
+        if key not in body_ids:
+            bid, _ = robots[i].find_bodies([name])
+            body_ids[key] = int(bid[0])
+        return body_ids[key]
+
+    def hand_pos(i):
+        p = robots[i].data.body_pose_w[0, _bid(i, "right_wrist_yaw_link"), :3]
+        return float(p[0]), float(p[1]), float(p[2])
+
+    def foot_z(i):
+        zl = float(robots[i].data.body_pose_w[0, _bid(i, "left_ankle_roll_link"), 2])
+        zr = float(robots[i].data.body_pose_w[0, _bid(i, "right_ankle_roll_link"), 2])
+        return min(zl, zr)
 
     def diag(label):
-        """Log cloth + palm geometry so we can see if the grasp can actually bind."""
         pts = clothmod.view_positions(cloth_view) if cloth_view is not None else np.zeros((0, 3))
         parts = [f"[diag] {label}"]
         if pts.shape[0]:
             cen = pts.mean(axis=0)
-            parts.append(f"sheet_centroid=({cen[0]:.2f},{cen[1]:.2f},{cen[2]:.2f}) "
-                         f"z[{pts[:,2].min():.2f},{pts[:,2].max():.2f}] n={pts.shape[0]}")
+            parts.append(f"sheet_cen=({cen[0]:.2f},{cen[1]:.2f},{cen[2]:.2f}) z[{pts[:,2].min():.2f},{pts[:,2].max():.2f}]")
         for i in (0, 1):
-            pp = arms[i].palm_pos()
-            gap = float(np.min(np.linalg.norm(pts - np.array(pp), axis=1))) if pts.shape[0] else -1.0
-            parts.append(f"r{i}_palm=({pp[0]:.2f},{pp[1]:.2f},{pp[2]:.2f}) gap={gap:.3f}")
+            bx, by = locos[i].base_xy()
+            hx, hy, hz = hand_pos(i)
+            gap = float(np.min(np.linalg.norm(pts - np.array([hx, hy, hz]), axis=1))) if pts.shape[0] else -1.0
+            # foot_z<0 means the foot is through the floor
+            parts.append(f"r{i}_base=({bx:.2f},{by:.2f},z{float(robots[i].data.root_pos_w[0,2]):.2f}) "
+                         f"hand=({hx:.2f},{hy:.2f},{hz:.2f}) gap={gap:.2f} foot_z={foot_z(i):.2f}")
         print("  ".join(parts), flush=True)
 
-    def run_replay():
-        """Drive both G1 arms from a REAL recorded bed-making trajectory (the
-        Unitree ``G1_WBT_Brainco_Make_The_Bed`` dataset) instead of scripted
-        waypoints. The two peers replay the same motion; robot 1's 180° spawn
-        rotation makes it a mirrored peer, and ``--lag`` desynchronises them."""
-        from examples.isaac_bed_making.replay import TrajectoryReplay
-        reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)}
-        N = reps[0].n_frames
-        spf = max(1, round((1.0 / sim_dt) / reps[0].fps / max(0.1, ARGS.replay_speed)))
-        lag = int(ARGS.lag * reps[0].fps)
-        cap_every = max(1, N // 170)
-        print(f"[demo] replaying real bed-making motion (episode {reps[0].source_episode}, "
-              f"{N} frames @ {reps[0].fps}fps, {spf} sim steps/frame, lag {lag}f)", flush=True)
-        if reps[0].missing:
-            print(f"[demo] joints not on this robot (skipped): {reps[0].missing}", flush=True)
-        if coord:
-            coord.invoke(0, "pickUpBedSheet", corner="A")
-            coord.invoke(1, "pickUpBedSheet", corner="B")
-        # Ease both arms from their rest pose into the first recorded pose so the
-        # arm doesn't snap (the PD target would otherwise jump in one step).
-        for w in range(40):
-            reps[0].warmup((w + 1) / 40.0)
-            reps[1].warmup((w + 1) / 40.0)
-            step()
-            if w % 8 == 0:
-                capture()
-        diag("warmed into first recorded pose")
-        mid_done = False
-        for i in range(N + lag):
-            reps[0].apply(i)
-            reps[1].apply(i - lag)
-            step(spf)
-            if i % cap_every == 0:
-                capture()
-            if coord and not mid_done and i >= N // 2:
-                # Halfway through, the peers report progress and one asks the other
-                # to help square its side — real Device Connect coordination layered
-                # over the real motion.
-                coord.invoke(0, "walkToNextCorner", direction="counterclockwise")
-                coord.invoke(1, "walkToNextCorner", direction="counterclockwise")
-                coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
-                coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
-                mid_done = True
-            if state["t"] > ARGS.max_seconds:
-                break
-        if coord:
-            coord.invoke(0, "putDownBedSheet", corner="A")
-            coord.invoke(1, "putDownBedSheet", corner="B")
-        diag("after replay")
-        capture()
+    # ── PHASE 0: stand + let the folded sheet settle ──
+    print("[demo] robots find their footing; the folded sheet settles…")
+    control(lambda i: (locos[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)), cap_every=4)
+    diag("after stand-settle")
 
-    def run_scripted():
-        """Legacy placeholder choreography: each planted peer presses a palm onto
-        its near sheet edge and drags it smooth by friction. Kept behind
-        ``--scripted`` for comparison; the dataset replay is the real motion."""
-        grab = scenemod.GRAB_POINTS
-        smooth = scenemod.SMOOTH_POINTS
+    # ── PHASE 1: learned approach-walk ──
+    if not ARGS.no_walk:
         if coord:
-            coord.invoke(0, "pickUpBedSheet", corner="A")
-            coord.invoke(1, "pickUpBedSheet", corner="B")
-        print("[demo] both peers press a palm onto their side of the sheet…")
-        d0, d1 = reach_both(grab[0], grab[1], tol=0.05, max_steps=320)
-        print(f"[diag] reach press: ik_dist=({d0},{d1})", flush=True)
-        diag("palms pressed on sheet")
-        capture()
-        if coord:
-            coord.invoke(0, "walkToNextCorner", direction="counterclockwise")
-            coord.invoke(1, "walkToNextCorner", direction="counterclockwise")
-        print("[demo] both peers smooth the cover (friction drag)…")
-        sd0, sd1 = reach_both(smooth[0], smooth[1], tol=0.06, max_steps=260)
-        print(f"[diag] reach smooth: ik_dist=({sd0},{sd1})", flush=True)
-        diag("after smoothing drag")
-        if coord:
-            coord.invoke(0, "putDownBedSheet", corner="A")
-            coord.invoke(1, "putDownBedSheet", corner="B")
-        capture()
-        if coord:
-            print("[demo] robot 0 asks the swarm for help smoothing its side…")
-            coord.invoke(0, "askForHelp", corner="A", reason="my side still needs smoothing")
-            help_pt = (grab[0][0], grab[0][1] + 0.12, grab[0][2])
-            reach(1, help_pt, tol=0.07, max_steps=240)
-            diag("after help smoothing")
-            step(10)
-            capture()
+            for i in (0, 1):
+                coord.invoke(i, "walkToNextCorner", direction="approach")
+        print("[demo] both G1s walk to the bed under the learned policy…")
+        steps = control(lambda i: locos[i].command_to(scenemod.ROBOTS[i]["manip"]),
+                        n_ctl=int(8.0 / (DECIMATION * sim_dt)), cap_every=2)
+        diag(f"arrived after {steps} control steps")
 
-    # Register the cloth in physics (one step) then open a tensor view so we can
-    # read its live deformed positions (GPU pipeline doesn't sync them to USD).
-    step(1)
-    cloth_view = clothmod.make_cloth_view("/World/Sheet")
-    mark("cloth tensor view ready")
-
-    # ── settle the draped sheet onto the bed, then make it ──
-    print("[demo] settling the bedsheet onto the bed…")
-    for _ in range(160):
-        step()
-        if _ % 12 == 0:
-            capture()
-    diag("after settle")
-
-    if ARGS.scripted:
-        run_scripted()
+    # ── PHASE 2: make the bed (the policy holds the stance THROUGHOUT) ──
+    # The locomotion policy actively balances each robot (feet planted) the entire
+    # time the arms work. We do NOT kinematically pin the floating base — writing the
+    # pelvis pose each step did not hold against gravity, so the robots fell forward
+    # onto the bed. Holding the stance with the policy keeps them upright on their
+    # feet while the arms reach (verified: pelvis steady ~0.72 m, hand reaches a
+    # commanded point to <1 mm when well-conditioned).
+    if not ARGS.walk_only:
+        print("[demo] standing at the bedside under the policy…", flush=True)
+        control(lambda i: (locos[i].stand(), False),
+                n_ctl=int(1.5 / (DECIMATION * sim_dt)), cap_every=4)
+        diag("standing stably at bedside")
+        if ARGS.replay:
+            run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt)
+        else:
+            run_bedmaking(arms, locos, coord, step, capture, diag, stage, cloth_view, sheet)
     else:
-        run_replay()
-
-    # settle + final frames
-    for _ in range(80):
-        step()
-        if _ % 10 == 0:
-            capture()
+        diag("walk-only: standing at the bedside")
 
     # ── report ──
     if coord:
         print("\n[demo] Device Connect event history (peer 0):")
         for e in coord.event_history(0, limit=40):
             print(f"   [{e['ts']}] {e['kind']:<14} {e['summary']}")
-        print("\n[demo] help history (peer 0):")
-        for h in coord.help_history(0, limit=20):
-            print(f"   [{h['ts']}] {h['kind']:<8} {h['summary']}")
         goals = [coord.invoke(i, "getGoalState") for i in (0, 1)]
-        print(f"\n[demo] goal state: {goals}")
+        print(f"[demo] goal state: {goals}")
         coord.stop()
 
-    # ── encode mp4 ──
     if ARGS.render and state["frame"] > 0:
-        import shutil
-        import subprocess
-        out = frames_dir / "isaac_bed_making.mp4"
-        if shutil.which("ffmpeg"):
-            subprocess.run(["ffmpeg", "-y", "-framerate", "20", "-pattern_type", "glob",
-                            "-i", str(frames_dir / "frame_*.png"),
-                            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", "yuv420p", str(out)],
-                           capture_output=True)
-            print(f"[demo] wrote {out} ({state['frame']} frames)")
-        else:
-            print(f"[demo] {state['frame']} frames in {frames_dir} (install ffmpeg for mp4)")
-
+        encode(frames_dir, state["frame"])
     print("[demo] done.")
     return 0
+
+
+def run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt):
+    """Replay the real recorded bed-making arm + waist motion while the locomotion
+    policy holds each robot's stance (legs balance, the upper body follows the
+    dataset). Only waist/arms/fingers are replayed — the legs are left to the
+    policy, so this also runs on the floating walk-in base. Robot 1's 180° spawn
+    makes it a mirrored peer; ``--lag`` desyncs them."""
+    N = reps[0].n_frames
+    spf = max(1, round((1.0 / sim_dt) / reps[0].fps / max(0.1, ARGS.replay_speed)))
+    ctl_per_frame = max(1, round(spf / DECIMATION))
+    lag = int(ARGS.lag * reps[0].fps)
+    cap_every = max(1, N // 160)
+
+    def hold_steps(n_ctl):
+        for _ in range(n_ctl):
+            for i in (0, 1):
+                locos[i].act(locos[i].stand())  # legs balance under the policy
+            step(DECIMATION)
+
+    print(f"[demo] arranging the sheet — real motion (episode {reps[0].source_episode}, "
+          f"{N} frames, {spf} sim steps/frame)", flush=True)
+    if coord:
+        coord.invoke(0, "pickUpBedSheet", corner="A")
+        coord.invoke(1, "pickUpBedSheet", corner="B")
+    # Ease arms from rest into the first recorded pose.
+    for w in range(40):
+        reps[0].warmup((w + 1) / 40.0)
+        reps[1].warmup((w + 1) / 40.0)
+        hold_steps(1)
+        if w % 8 == 0:
+            capture()
+    mid_done = False
+    for j in range(N + lag):
+        reps[0].apply(j)
+        reps[1].apply(j - lag)
+        hold_steps(ctl_per_frame)
+        if j % cap_every == 0:
+            capture()
+        if coord and not mid_done and j >= N // 2:
+            coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
+            coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
+            mid_done = True
+    if coord:
+        coord.invoke(0, "putDownBedSheet", corner="A")
+        coord.invoke(1, "putDownBedSheet", corner="B")
+    diag("after arranging")
+    capture()
+
+
+def run_bedmaking(arms, locos, coord, step, capture, diag, stage, cloth_view, sheet):
+    """Closed-loop bed-making with the policy holding each robot's stance the whole
+    time. Each G1 finds its near edge of the sheet from the LIVE cloth positions,
+    reaches it with world-frame arm IK (floating-base jacobian + per-step clamp),
+    grasps it, and pulls it out + down to spread that side taut with the 9-inch
+    overhang. Robot 0 works the -y side, robot 1 the +y side. (Planted robots reach
+    their near edge but not the far corners — that needs corner-to-corner walking,
+    a later step.)"""
+    SIDE, TOP, MX = scenemod.SIDE_Y, scenemod.BED_TOP_Z, scenemod.MANIP_X
+    sign = {0: -1.0, 1: 1.0}
+
+    def hold_stance():
+        for i in (0, 1):
+            locos[i].act(locos[i].stand())  # legs balance while the arms work
+
+    def reach_both(t0, t1, tol=0.06, max_steps=300):
+        arms[0].set_target(list(t0))
+        arms[1].set_target(list(t1))
+        d0 = d1 = None
+        for s in range(max_steps):
+            hold_stance()
+            d0 = arms[0].tick()
+            d1 = arms[1].tick()
+            step(DECIMATION)
+            if s % 6 == 0:
+                capture()
+            if (d0 or 9) < tol and (d1 or 9) < tol:
+                break
+        return d0, d1
+
+    def settle(n_ctl):
+        for s in range(n_ctl):
+            hold_stance()
+            step(DECIMATION)
+            if s % 4 == 0:
+                capture()
+
+    def near_cloth(ref):
+        pts = clothmod.view_positions(cloth_view)
+        if pts.shape[0] == 0:
+            return ref
+        k = int(np.argmin(np.linalg.norm(pts - np.array(ref), axis=1)))
+        return float(pts[k, 0]), float(pts[k, 1]), float(pts[k, 2])
+
+    # 1) reach down to the live near edge of the sheet (find the cloth, don't guess)
+    if coord:
+        coord.invoke(0, "pickUpBedSheet", corner="A")
+        coord.invoke(1, "pickUpBedSheet", corner="B")
+    g = {i: near_cloth((MX, sign[i] * (SIDE - 0.05), TOP + 0.04)) for i in (0, 1)}
+    print(f"[demo] reaching the near sheet edge: r0->{tuple(round(v,2) for v in g[0])} "
+          f"r1->{tuple(round(v,2) for v in g[1])}", flush=True)
+    # Hover the hand just ABOVE the near edge — reaching all the way down to the bed
+    # surface (z≈0.69) over-extends the arm and the IK stalls ~10 cm short. Hovering
+    # at a comfortable height keeps the reach in-workspace; the grasp's bind offset
+    # (0.14 m) catches the draped cloth below the hand.
+    d = reach_both((g[0][0], g[0][1], max(g[0][2] + 0.10, 0.78)),
+                   (g[1][0], g[1][1], max(g[1][2] + 0.10, 0.78)),
+                   tol=0.05, max_steps=300)
+    diag(f"reached edge (ik dist {d})")
+
+    # 2) grasp the cloth at each hand (PhysX attachment binds the overlapping cloth)
+    for i in (0, 1):
+        clothmod.grasp(stage, "/World/Sheet", f"/World/envs/env_0/Robot_{i}/right_wrist_yaw_link",
+                       f"/World/grasp_{i}", bind_offset=0.14)
+    settle(12)
+    diag("grasped the sheet edge")
+
+    # 3) gentle outward + down drag FROM where each hand actually grasped, to spread
+    # that side taut with the overhang. A relative tug (rather than a far world
+    # target) keeps the pull inside the arm's comfortable workspace so the reaction
+    # force does not yank the policy-balanced base off its feet.
+    print("[demo] pulling the sheet out to spread it over the bed…", flush=True)
+    h = {i: arms[i].ee_pos() for i in (0, 1)}
+    s = {i: (h[i][0], h[i][1] + sign[i] * 0.14, h[i][2] - 0.12) for i in (0, 1)}
+    reach_both(s[0], s[1], tol=0.06, max_steps=240)
+    diag("spread to the side")
+
+    # 4) release + a help exchange over Device Connect, then settle
+    for i in (0, 1):
+        clothmod.release(stage, f"/World/grasp_{i}")
+    if coord:
+        coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
+        coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
+        coord.invoke(0, "putDownBedSheet", corner="A")
+        coord.invoke(1, "putDownBedSheet", corner="B")
+    settle(60)
+    diag("after bed-making")
+    capture()
+
+
+def encode(frames_dir, n):
+    import shutil
+    import subprocess
+    out = frames_dir / "isaac_bed_making.mp4"
+    if shutil.which("ffmpeg"):
+        subprocess.run(["ffmpeg", "-y", "-framerate", "20", "-pattern_type", "glob",
+                        "-i", str(frames_dir / "frame_*.png"),
+                        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", "yuv420p", str(out)],
+                       capture_output=True)
+        print(f"[demo] wrote {out} ({n} frames)")
+    else:
+        print(f"[demo] {n} frames in {frames_dir} (install ffmpeg for mp4)")
 
 
 if __name__ == "__main__":
@@ -381,10 +456,19 @@ if __name__ == "__main__":
     except Exception:
         traceback.print_exc()
         rc = 1
-    # Isaac's replicator orchestrator can hang inside simulation_app.close() on
-    # headless shutdown with cameras enabled. All artifacts (frames + mp4) are
-    # already written by main() before this point, so flush and hard-exit rather
-    # than risk wedging on close(). os._exit skips atexit/close() entirely.
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(rc)
+    if ARGS.gui:
+        # Keep the window open so you can orbit/inspect after the run; close it
+        # (or Ctrl-C) to exit.
+        print("[demo] GUI open — close the window or press Ctrl-C to exit.", flush=True)
+        try:
+            while simulation_app.is_running():
+                simulation_app.update()
+        except KeyboardInterrupt:
+            pass
+        simulation_app.close()
+    else:
+        # Isaac's replicator orchestrator can hang inside simulation_app.close() on
+        # headless shutdown with cameras; artifacts are already written, so hard-exit.
+        os._exit(rc)

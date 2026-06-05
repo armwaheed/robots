@@ -81,21 +81,36 @@ def build_bedsheet(
     damping: float = 0.25,
     particle_mass: float = 0.02,
     thickness: float = 0.0,
+    fold: bool = False,
+    fold_start: float = 0.66,
 ) -> Bedsheet:
-    """Create a draping particle-cloth sheet as a triangulated grid mesh.
+    """Create a draping particle-cloth sheet as a quad grid mesh.
 
-    ``origin`` is the world translate of the (flat, +Z-up) sheet centre. The
-    sheet falls and drapes under gravity once the sim steps.
+    ``origin`` is the world translate of the sheet centre. With ``fold=False`` the
+    sheet starts flat (+Z-up) and drapes under gravity. With ``fold=True`` the
+    **foot end is folded back over itself**: the length up to ``fold_start`` lies
+    flat, and the remaining foot fraction folds back over the top (as a turned-back
+    sheet at the foot of the bed, like the Figure Helix clip) — so the bed starts
+    unmade and the robots arrange it. The four cloth corners are still tracked.
     """
     from omni.physx.scripts import particleUtils, physicsUtils
 
     Wx, Wy = size
     nx, ny = resolution
+    layer_dz = max(thickness, 0.04)  # height the folded-back flap sits above the sheet
+    x_fold = fold_start * Wx - Wx / 2.0  # local x of the fold line
 
     pts: List[Gf.Vec3f] = []
     for j in range(ny + 1):
         for i in range(nx + 1):
-            pts.append(Gf.Vec3f(i / nx * Wx - Wx / 2.0, j / ny * Wy - Wy / 2.0, 0.0))
+            u, v = i / nx, j / ny
+            if fold and u > fold_start:
+                # Fold the foot flap back over the top toward the head.
+                x = x_fold - (u - fold_start) * Wx
+                z = layer_dz
+            else:
+                x, z = u * Wx - Wx / 2.0, 0.0
+            pts.append(Gf.Vec3f(x, v * Wy - Wy / 2.0, z))
     idx: List[int] = []
     counts: List[int] = []
 

@@ -8,6 +8,12 @@ frame, as the stock ``run_diff_ik.py`` tutorial does, diverges for the G1
 because that tutorial's robots have their root at the world origin.) Verified on
 the DGX Spark: in-workspace targets converge to ~1 cm.
 
+On a FLOATING base (the walking G1 — issue #2 item #4) the PhysX jacobian gains 6
+leading root-DOF columns, so the arm-joint columns shift by +6 (``jac_cols``) and
+the end-effector body index is no longer offset by -1 (``ej``). With those two
+floating-base corrections the same world-frame controller converges to <1 mm on a
+pinned base and within a few cm while the locomotion policy actively balances.
+
 Grasping is a PhysX auto-attachment between the cloth and the hand's palm link;
 releasing deletes it.
 """
@@ -31,7 +37,7 @@ PALM_LINK = {"left": "left_hand_palm_link", "right": "right_hand_palm_link"}
 class ArmIK:
     """World-frame differential-IK driver for one G1 arm."""
 
-    def __init__(self, robot, scene, side: str, device: str):
+    def __init__(self, robot, scene, side: str, device: str, max_step: float = 0.04):
         import torch
         from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 
@@ -39,6 +45,11 @@ class ArmIK:
         self.robot = robot
         self.side = side
         self.device = device
+        # Max per-step joint change (rad). The arm eases toward the target instead
+        # of whipping; a whip on the policy-balanced FLOATING base jolts the body
+        # and makes it stagger (verified: unclamped IK walked the robot off its
+        # feet). Set to None to disable.
+        self.max_step = max_step
         # Resolve joint/body indices directly off THIS robot's articulation rather
         # than via SceneEntityCfg("robot"): the bed-making scene holds two robots
         # ("robot_0"/"robot_1"), so there is no entity literally named "robot".
@@ -48,6 +59,11 @@ class ArmIK:
         body_ids, _ = robot.find_bodies([EE_LINK[side]], preserve_order=True)
         self.ee_body_id = int(body_ids[0])
         self.ej = self.ee_body_id - 1 if robot.is_fixed_base else self.ee_body_id
+        # PhysX jacobian columns: a FLOATING base prepends 6 root DOFs, so the arm
+        # joint columns are shifted by 6 (a fixed base has no such prefix). Without
+        # this the IK drives the wrong columns and diverges.
+        self.jac_cols = (list(self.joint_ids) if robot.is_fixed_base
+                         else [j + 6 for j in self.joint_ids])
         # Palm link name varies by hand (Dex3 vs Inspire); fall back to the wrist
         # EE link if the named palm link isn't present.
         try:
@@ -78,14 +94,25 @@ class ArmIK:
         self.target = None
 
     def tick(self) -> Optional[float]:
-        """Advance one IK step toward the target. Returns distance-to-target (m)."""
+        """Advance one IK step toward the target. Returns distance-to-target (m).
+
+        Reads the WORLD-frame jacobian columns for this arm's joints via
+        ``self.jac_cols``: on a FLOATING base the 6 root DOFs come first, so the arm
+        columns are offset by +6. Indexing with the raw ``joint_ids`` (as before)
+        drives the wrong columns and the arm diverges — verified on the bedside G1
+        (27-37 cm error vs <1 mm with the offset). The per-step joint change is then
+        clamped (:attr:`max_step`) so the arm eases in without whipping the base."""
         if self.target is None:
             return None
-        jac = self.robot.root_physx_view.get_jacobians()[:, self.ej, :, self.joint_ids]
+        torch = self._torch
+        jac = self.robot.root_physx_view.get_jacobians()[:, self.ej, :, self.jac_cols]
         pw, qw = self._ee()
-        jpd = self.ik.compute(pw, qw, jac, self.robot.data.joint_pos[:, self.joint_ids])
+        cur = self.robot.data.joint_pos[:, self.joint_ids]
+        jpd = self.ik.compute(pw, qw, jac, cur)
+        if self.max_step is not None:
+            jpd = cur + torch.clamp(jpd - cur, -self.max_step, self.max_step)
         self.robot.set_joint_position_target(jpd, joint_ids=self.joint_ids)
-        return float(self._torch.norm(pw[0] - self.target[0]).item())
+        return float(torch.norm(pw[0] - self.target[0]).item())
 
     def ee_pos(self) -> List[float]:
         return [float(x) for x in self._ee()[0][0].tolist()]
