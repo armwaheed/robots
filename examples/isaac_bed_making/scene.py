@@ -56,8 +56,9 @@ ROBOTS = {
     1: {"approach": (MANIP_X, APPROACH_Y, ROBOT_Z), "manip": (MANIP_X, MANIP_Y),
         "yaw_deg": -90.0, "side": "+y"},
 }
-# Bent-knee standing default the agile locomotion policy expects (its output is an
-# offset from this pose). Unmatched joints (arms/waist/fingers) default to 0.
+# Bent-knee standing default the rl_gym walk policy expects (its output is an
+# offset from this pose); this matches RLGYM_DEFAULT_ANGLES. Unmatched joints
+# (arms/waist/fingers) default to 0.
 WALK_DEFAULT_JOINTS = {
     ".*_hip_pitch_joint": -0.10,
     ".*_knee_joint": 0.30,
@@ -100,6 +101,7 @@ def build_scene_cfg(g1_cfg):
     bed + headboard + pillows. The G1s spawn at their approach positions with
     gravity on and a free base so the locomotion policy can walk them in."""
     import isaaclab.sim as sim_utils
+    from isaaclab.actuators import ImplicitActuatorCfg
     from isaaclab.assets import AssetBaseCfg
     from isaaclab.scene import InteractiveSceneCfg
     from isaaclab.utils import configclass
@@ -111,6 +113,22 @@ def build_scene_cfg(g1_cfg):
         # baked root_joint before reset — see locomotion.make_floating_base).
         g.spawn.rigid_props.disable_gravity = False
         g.spawn.articulation_props.fix_root_link = False
+        # The rl_gym walk policy was trained with specific leg PD gains; set them on
+        # the Isaac actuators or the policy's targets are tracked wrong and it falls.
+        # Replacing the "legs"/"feet" groups (hips+knee / ankles) leaves waist + arms
+        # + hands untouched. (kp/kd from policies/g1_rlgym_walk.yaml.)
+        g.actuators = dict(g.actuators)
+        g.actuators["legs"] = ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_pitch_joint", ".*_hip_roll_joint",
+                              ".*_hip_yaw_joint", ".*_knee_joint"],
+            stiffness={".*_hip_pitch_joint": 100.0, ".*_hip_roll_joint": 100.0,
+                       ".*_hip_yaw_joint": 100.0, ".*_knee_joint": 150.0},
+            damping={".*_hip_pitch_joint": 2.0, ".*_hip_roll_joint": 2.0,
+                     ".*_hip_yaw_joint": 2.0, ".*_knee_joint": 4.0},
+            effort_limit_sim=200.0, velocity_limit_sim=100.0)
+        g.actuators["feet"] = ImplicitActuatorCfg(
+            joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            stiffness=40.0, damping=2.0, effort_limit_sim=100.0, velocity_limit_sim=100.0)
         g.init_state = g.init_state.replace(
             pos=ROBOTS[idx]["approach"],
             rot=yaw_to_quat(ROBOTS[idx]["yaw_deg"]),

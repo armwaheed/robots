@@ -20,7 +20,16 @@ releasing deletes it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
+
+WAIST_JOINTS = ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
+# Kinematics-only G1 URDF (Inspire hand) for the Pink IK solver. Built from
+# unitree_ros' g1_29dof_rev_1_0_with_inspire_hand_DFQ.urdf with the visual/collision
+# mesh geometry stripped (Pinocchio needs only the kinematic tree, and bundling the
+# STL meshes is unnecessary). Its 53 actuated joint names match the Isaac Lab Inspire
+# USD exactly, so the controller maps cleanly onto our sim robot.
+PINK_URDF = str(Path(__file__).with_name("assets") / "g1_inspire_kin.urdf")
 
 ARM_JOINTS = {
     "left": ["left_shoulder_pitch_joint", "left_shoulder_roll_joint",
@@ -124,6 +133,114 @@ class ArmIK:
 
     def palm_path(self, robot_prim_path: str) -> str:
         return f"{robot_prim_path}/{PALM_LINK[self.side]}"
+
+
+class PinkArmIK:
+    """NVIDIA Pink (Pinocchio) IK driver for one G1 arm **plus the waist**.
+
+    This is the established G1 manipulation IK from Isaac Lab's locomanipulation
+    pick-place env (``isaaclab.controllers.pink_ik``). Unlike the single-arm
+    differential-IK :class:`ArmIK`, it solves a weighted QP over the arm *and the
+    3-DOF waist*, so the torso **leans into** a low reach the way a person bends to
+    make a bed — and it respects joint limits and damps near singularities.
+
+    Drop-in for :class:`ArmIK`: ``set_target(world_xyz)`` / ``tick()`` / ``ee_pos()``.
+    Orientation is left near the wrist's current pose (position-dominant), which is
+    what the friction grasp needs. The base is held (pinned) during manipulation, so
+    the pelvis frame the IK solves against is stable.
+
+    Requires ``eigenpy``/``pinocchio`` to be imported **before** the Isaac app (see
+    demo.py) or Pinocchio's ``StdVec_StdString`` converter is shadowed and the
+    controller fails to build.
+    """
+
+    def __init__(self, robot, side: str, device: str, control_dt: float, max_step: float = 0.05):
+        import numpy as np
+        import torch
+        from isaaclab.controllers.pink_ik import PinkIKController
+        from isaaclab.controllers.pink_ik.local_frame_task import LocalFrameTask
+        from isaaclab.controllers.pink_ik.null_space_posture_task import NullSpacePostureTask
+        from isaaclab.controllers.pink_ik.pink_ik_cfg import PinkIKControllerCfg
+        from isaaclab_assets.robots.unitree import G1_INSPIRE_FTP_CFG
+
+        self._np, self._torch = np, torch
+        self.robot = robot
+        self.side = side
+        self.device = device
+        self.dt = control_dt
+        self.max_step = max_step
+        ee = EE_LINK[side]
+        posture_joints = [ARM_JOINTS[side][0], ARM_JOINTS[side][1], ARM_JOINTS[side][2]] + WAIST_JOINTS
+        cfg = PinkIKControllerCfg(
+            urdf_path=PINK_URDF,
+            num_hand_joints=0,
+            base_link_name="pelvis",
+            show_ik_warnings=False,
+            fail_on_joint_limit_violation=False,
+            variable_input_tasks=[
+                LocalFrameTask(ee, base_link_frame_name="pelvis",
+                               position_cost=8.0, orientation_cost=0.5, lm_damping=10, gain=0.5),
+                NullSpacePostureTask(cost=0.3, lm_damping=1, controlled_frames=[ee],
+                                     controlled_joints=posture_joints, gain=0.2),
+            ],
+            fixed_input_tasks=[],
+        )
+        controlled = ARM_JOINTS[side] + WAIST_JOINTS
+        self.cj_ids, cj_names = robot.find_joints(controlled, preserve_order=True)
+        cfg.joint_names = cj_names
+        cfg.all_joint_names = list(robot.data.joint_names)
+        self._tasks = cfg.variable_input_tasks
+        self.ctrl = PinkIKController(cfg=cfg, robot_cfg=G1_INSPIRE_FTP_CFG, device=str(device),
+                                     controlled_joint_indices=list(self.cj_ids))
+        from isaaclab.controllers.pink_ik.local_frame_task import LocalFrameTask as _LFT
+        self._LFT = _LFT
+        wid, _ = robot.find_bodies([ee], preserve_order=True)
+        pid, _ = robot.find_bodies(["pelvis"], preserve_order=True)
+        self.wrist_id, self.pelvis_id = int(wid[0]), int(pid[0])
+        self.target = None
+
+    def _wrist_world(self):
+        p = self.robot.data.body_link_pose_w[0, self.wrist_id, :3]
+        return self._np.array([float(p[0]), float(p[1]), float(p[2])])
+
+    def set_target(self, pos_w) -> None:
+        """Command a world-frame wrist position (orientation held near current)."""
+        self.target = self._np.array([float(v) for v in pos_w])
+
+    def clear(self) -> None:
+        self.target = None
+
+    def tick(self) -> Optional[float]:
+        """Solve the Pink QP for the current target and apply the joint targets.
+        Returns the wrist-to-target distance (m). Call once per control step."""
+        if self.target is None:
+            return None
+        import pinocchio as pin
+        np, torch = self._np, self._torch
+        import isaaclab.utils.math as math_utils
+
+        ppose = self.robot.data.body_link_pose_w[0, self.pelvis_id, :7]
+        p_p = ppose[:3].cpu().numpy()
+        R_p = math_utils.matrix_from_quat(ppose[3:7].unsqueeze(0))[0].cpu().numpy()
+        # keep the wrist's current orientation (position-dominant reach)
+        wq = self.robot.data.body_link_pose_w[0, self.wrist_id, 3:7]
+        R_t = math_utils.matrix_from_quat(wq.unsqueeze(0))[0].cpu().numpy()
+        trans_pelvis = R_p.T @ (self.target - p_p)
+        rot_pelvis = R_p.T @ R_t
+        se3 = pin.SE3(np.ascontiguousarray(rot_pelvis), np.ascontiguousarray(trans_pelvis))
+        for task in self._tasks:
+            if isinstance(task, self._LFT):
+                task.set_target(se3)
+        curr = self.robot.data.joint_pos.cpu().numpy()[0]
+        des = self.ctrl.compute(curr, self.dt)  # (n_controlled,) torch on device
+        cur_ctrl = self.robot.data.joint_pos[0, self.cj_ids]
+        if self.max_step is not None:
+            des = cur_ctrl + torch.clamp(des - cur_ctrl, -self.max_step, self.max_step)
+        self.robot.set_joint_position_target(des.unsqueeze(0), joint_ids=list(self.cj_ids))
+        return float(np.linalg.norm(self._wrist_world() - self.target))
+
+    def ee_pos(self) -> List[float]:
+        return [float(v) for v in self._wrist_world()]
 
 
 def apply_hand_friction(stage, robot_prim_path: str, side: str,

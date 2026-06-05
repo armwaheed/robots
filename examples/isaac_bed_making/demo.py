@@ -4,8 +4,8 @@ peers over Arm Device Connect.
 End to end, each G1:
 
 1. **Walks in** from ~0.5 m off its side of the bed under a **learned RL
-   locomotion policy** (Isaac Lab's pretrained agile policy — issue #2 item #4),
-   balancing on its legs while tracking a velocity command.
+   locomotion policy** (Unitree's open ``unitree_rl_gym`` G1 walk policy — issue #2
+   item #4), balancing on its legs while tracking a velocity command.
 2. **Settles** at the bedside (its base is then held steady), and
 3. **Makes the bed** by replaying **real recorded arm motion** from Unitree's
    teleoperated bed-making dataset (waist + both arms, with Inspire 5-finger
@@ -25,9 +25,11 @@ Run with the Isaac Lab Python on the DGX Spark::
     export LD_PRELOAD="$LD_PRELOAD:/lib/aarch64-linux-gnu/libgomp.so.1"
     ./isaaclab.sh -p ~/workspaces/git/robots/examples/isaac_bed_making/demo.py --loopback --render
 
-Rendering note: on the GPU PhysX pipeline, particle-cloth deformation is not
-synced to USD/Fabric, so the demo runs with ``use_fabric=False`` and blits the
-live cloth positions (read from a PhysX tensor cloth-view) into the visual mesh.
+Rendering note: the demo runs with ``use_fabric=True`` so the robot articulations
+render their true motion (Isaac Lab only pushes link poses to the renderer when
+Fabric is on). PhysX does not auto-sync particle-cloth deformation to Fabric, so we
+read the live cloth positions from a PhysX tensor cloth-view and write them into the
+Fabric mesh points each render (mesh updates propagate through Fabric — see cloth.py).
 
 Self-contained: does not modify ``strands_robots`` or Arm's Device Connect; reuses
 the swarm driver from ``examples/unitree_g1_bed_making_g1_driver.py``.
@@ -68,6 +70,16 @@ def parse_args():
 
 ARGS = parse_args()
 
+# Import eigenpy + pinocchio BEFORE the Isaac app launches so eigenpy registers its
+# StdVec_StdString converter first. Launching the app afterwards otherwise shadows
+# that registration and Pinocchio's ``model.names.tolist()`` throws inside the Pink
+# IK controller (manipulation.PinkArmIK). Harmless if pinocchio isn't installed.
+try:
+    import eigenpy  # noqa: F401
+    import pinocchio  # noqa: F401
+except Exception:
+    pass
+
 # ── Launch the simulator first (Isaac Lab requires this before other imports) ──
 from isaaclab.app import AppLauncher  # noqa: E402
 
@@ -84,11 +96,11 @@ from isaaclab_assets.robots.unitree import G1_INSPIRE_FTP_CFG  # noqa: E402
 from examples.isaac_bed_making import cloth as clothmod  # noqa: E402
 from examples.isaac_bed_making import locomotion as locomod  # noqa: E402
 from examples.isaac_bed_making import scene as scenemod  # noqa: E402
-from examples.isaac_bed_making.manipulation import ArmIK, apply_hand_friction  # noqa: E402
+from examples.isaac_bed_making.manipulation import PinkArmIK, apply_hand_friction  # noqa: E402
 from examples.isaac_bed_making.replay import TrajectoryReplay  # noqa: E402
 
-SIM_DT = 1 / 200          # the agile locomotion policy's native rate
-DECIMATION = 4            # policy/control runs every 4 sim steps (~50 Hz)
+SIM_DT = 0.002            # the rl_gym walk policy's native sim rate (500 Hz)
+DECIMATION = 10           # policy/control runs every 10 sim steps (50 Hz)
 
 
 def main() -> int:
@@ -100,7 +112,7 @@ def main() -> int:
 
     mark("building scene cfg (Inspire 5-finger G1s, headboard + pillows)")
     SceneCfg = scenemod.build_scene_cfg(G1_INSPIRE_FTP_CFG)
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=SIM_DT, device="cuda:0", use_fabric=False))
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=SIM_DT, device="cuda:0", use_fabric=True))
     scene = InteractiveScene(SceneCfg(num_envs=1, env_spacing=8.0))
     mark("scene built")
 
@@ -136,10 +148,17 @@ def main() -> int:
         cam.set_world_poses_from_view(torch.tensor([scenemod.CAM_EYE], device=sim.device),
                                       torch.tensor([scenemod.CAM_TARGET], device=sim.device))
 
-    # ── learned locomotion (shared pretrained agile policy) ──
+    # ── learned locomotion: two policies, each used for what it's good at ──
+    # WALK-IN: Unitree's open rl_gym G1 walk policy strides across the floor (one
+    # stateful LSTM instance per robot — sharing one would mix their hidden states).
+    # STANCE: Isaac Lab's agile policy actively balances each robot in place while
+    # the arms work. The walk policy is a gait-clock walker — at zero command it keeps
+    # marching and drifts/topples, so it travels but does not hold a manipulation stance.
+    walk = {i: locomod.RLGymWalker(robots[i], sim.device, SIM_DT * DECIMATION) for i in (0, 1)}
     agile = locomod.load_agile_policy(sim.device)
-    locos = {i: locomod.LocomotionPolicy(robots[i], sim.device, agile) for i in (0, 1)}
-    mark("agile locomotion policy ready")
+    stance = {i: locomod.LocomotionPolicy(robots[i], sim.device, agile) for i in (0, 1)}
+    locos = walk  # phase 1 (the approach-walk) drives the robots with the walkers
+    mark("locomotion ready (rl_gym walk-in + agile balance stance)")
 
     # ── folded bedsheet ──
     scene_path = clothmod.find_physics_scene_path(stage)
@@ -152,8 +171,8 @@ def main() -> int:
         fold_start=scenemod.SHEET_FOLD_START)
     mark("folded bedsheet built")
 
-    # ── manipulation: closed-loop arm IK (default) + optional dataset replay ──
-    arms = {i: ArmIK(robots[i], scene, "right", sim.device) for i in (0, 1)}
+    # ── manipulation: closed-loop Pink IK (arm + waist) + optional dataset replay ──
+    arms = {i: PinkArmIK(robots[i], "right", sim.device, SIM_DT * DECIMATION) for i in (0, 1)}
     reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)} if ARGS.replay else {}
 
     # ── Device Connect swarm ──
@@ -163,21 +182,33 @@ def main() -> int:
         coord = SwarmCoordinator(mode="broker" if ARGS.broker else "loopback", nats_url=ARGS.nats_url)
         print(f"[demo] Device Connect swarm online ({coord.mode}): {coord.start()}")
 
-    state = {"frame": 0, "t": 0.0}
+    state = {"frame": 0, "t": 0.0, "pin": None}
     cloth_view = None
+    fabric_points = None
+    zero_vel = torch.zeros((1, 6), device=sim.device)
 
     def step(n=1):
         for _ in range(n):
             scene.write_data_to_sim()
             sim.step(render=False)
+            # Once planted (after the walk-in), the pelvis is held kinematically at
+            # its arrived pose EVERY sim step. A free-floating G1 cannot balance
+            # through a bed-making reach/lean with the policies we have — it topples;
+            # planting the base (the robot "stands firmly") lets the arms do the real
+            # recorded motion while the legs/feet stay put. Writing every sim step
+            # (not just every control step) is what actually holds it.
+            if state["pin"] is not None:
+                for i in (0, 1):
+                    robots[i].write_root_pose_to_sim(state["pin"][i])
+                    robots[i].write_root_velocity_to_sim(zero_vel)
             scene.update(sim_dt)
             state["t"] += sim_dt
 
     def capture():
         if cam is None:
             return
-        if cloth_view is not None:
-            clothmod.sync_mesh_from_view(cloth_view, sheet.mesh)
+        if cloth_view is not None and fabric_points is not None:
+            clothmod.sync_fabric_from_view(cloth_view, fabric_points)
         sim.render()  # updates the live GUI viewport too, when --gui
         cam.update(dt=sim_dt)
         if not ARGS.render:
@@ -192,15 +223,18 @@ def main() -> int:
         if state["frame"] % 20 == 0:
             print(f"[demo] captured {state['frame']} frames (t={state['t']:.1f}s)", flush=True)
 
-    def control(cmd_fn, n_ctl, cap_every=2):
-        """Run the locomotion policy for n_ctl control steps (each = DECIMATION sim
-        steps). ``cmd_fn(i)`` returns (command, arrived) for robot i. Stops early
-        when both robots report arrived."""
+    def control(cmd_fn, n_ctl, cap_every=2, pols=None):
+        """Run a locomotion policy for n_ctl control steps (each = DECIMATION sim
+        steps). ``cmd_fn(i)`` returns (command, arrived) for robot i. ``pols`` selects
+        which policy set drives the legs (walk vs. stance); defaults to the walkers.
+        The command must match the chosen policy (``command_to``/``stand`` of the same
+        set). Stops early when both robots report arrived."""
+        pols = pols or locos
         for c in range(n_ctl):
             arrived = []
             for i in (0, 1):
                 cmd, arr = cmd_fn(i)
-                locos[i].act(cmd)
+                pols[i].act(cmd)
                 arrived.append(arr)
             step(DECIMATION)
             if c % cap_every == 0:
@@ -209,9 +243,13 @@ def main() -> int:
                 return c
         return n_ctl
 
-    # Register the cloth in physics, open a tensor view for live positions.
+    # Register the cloth in physics, open a tensor view for live positions, and grab
+    # the Fabric points handle we blit the deformation into each render.
     step(1)
     cloth_view = clothmod.make_cloth_view("/World/Sheet")
+    fabric_points = clothmod.make_fabric_points("/World/Sheet")
+    if fabric_points is None:
+        print("[demo] WARNING: cloth not in Fabric — sheet deformation may not render", flush=True)
 
     body_ids = {}
 
@@ -246,9 +284,10 @@ def main() -> int:
                          f"hand=({hx:.2f},{hy:.2f},{hz:.2f}) gap={gap:.2f} foot_z={foot_z(i):.2f}")
         print("  ".join(parts), flush=True)
 
-    # ── PHASE 0: stand + let the folded sheet settle ──
+    # ── PHASE 0: stand + let the folded sheet settle (agile balance) ──
     print("[demo] robots find their footing; the folded sheet settles…")
-    control(lambda i: (locos[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)), cap_every=4)
+    control(lambda i: (stance[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)),
+            cap_every=4, pols=stance)
     diag("after stand-settle")
 
     # ── PHASE 1: learned approach-walk ──
@@ -269,14 +308,23 @@ def main() -> int:
     # feet while the arms reach (verified: pelvis steady ~0.72 m, hand reaches a
     # commanded point to <1 mm when well-conditioned).
     if not ARGS.walk_only:
-        print("[demo] standing at the bedside under the policy…", flush=True)
-        control(lambda i: (locos[i].stand(), False),
-                n_ctl=int(1.5 / (DECIMATION * sim_dt)), cap_every=4)
-        diag("standing stably at bedside")
+        # Settle the gait into a double-support stand (both feet down) before planting.
+        print("[demo] settling into a stance at the bedside…", flush=True)
+        control(lambda i: (stance[i].stand(), False),
+                n_ctl=int(1.0 / (DECIMATION * sim_dt)), cap_every=4, pols=stance)
+        # Plant: hold each pelvis at its arrived pose so the arms can make the bed
+        # without the free base toppling. Freeze the legs at the settled pose too, so
+        # they stay planted (the stance policy is no longer needed once pinned).
+        state["pin"] = [robots[i].data.root_pose_w[:1].clone() for i in (0, 1)]
+        for i in (0, 1):
+            robots[i].set_joint_position_target(
+                robots[i].data.joint_pos[:, stance[i].leg_ids].clone(), joint_ids=stance[i].leg_ids)
+        step(2)
+        diag("planted firmly at the bedside")
         if ARGS.replay:
-            run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt)
+            run_replay(reps, robots, stance, coord, step, capture, diag, sim_dt)
         else:
-            run_bedmaking(arms, locos, coord, step, capture, diag, stage, cloth_view, sheet)
+            run_bedmaking(arms, stance, coord, step, capture, diag, stage, cloth_view, sheet)
     else:
         diag("walk-only: standing at the bedside")
 
@@ -295,10 +343,10 @@ def main() -> int:
     return 0
 
 
-def run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt):
-    """Replay the real recorded bed-making arm + waist motion while the locomotion
-    policy holds each robot's stance (legs balance, the upper body follows the
-    dataset). Only waist/arms/fingers are replayed — the legs are left to the
+def run_replay(reps, robots, stance, coord, step, capture, diag, sim_dt):
+    """Replay the real recorded bed-making arm + waist motion while the agile
+    balance policy holds each robot's stance (legs balance, the upper body follows
+    the dataset). Only waist/arms/fingers are replayed — the legs are left to the
     policy, so this also runs on the floating walk-in base. Robot 1's 180° spawn
     makes it a mirrored peer; ``--lag`` desyncs them."""
     N = reps[0].n_frames
@@ -308,9 +356,9 @@ def run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt):
     cap_every = max(1, N // 160)
 
     def hold_steps(n_ctl):
+        # Base is pinned and the legs are frozen at the planted pose, so the legs need
+        # no per-step control here — only the waist/arms/fingers move (driven by apply).
         for _ in range(n_ctl):
-            for i in (0, 1):
-                locos[i].act(locos[i].stand())  # legs balance under the policy
             step(DECIMATION)
 
     print(f"[demo] arranging the sheet — real motion (episode {reps[0].source_episode}, "
@@ -343,9 +391,9 @@ def run_replay(reps, robots, locos, coord, step, capture, diag, sim_dt):
     capture()
 
 
-def run_bedmaking(arms, locos, coord, step, capture, diag, stage, cloth_view, sheet):
-    """Closed-loop bed-making with the policy holding each robot's stance the whole
-    time. Each G1 finds its near edge of the sheet from the LIVE cloth positions,
+def run_bedmaking(arms, stance, coord, step, capture, diag, stage, cloth_view, sheet):
+    """Closed-loop bed-making with the agile policy holding each robot's stance the
+    whole time. Each G1 finds its near edge of the sheet from the LIVE cloth positions,
     reaches it with world-frame arm IK (floating-base jacobian + per-step clamp),
     grasps it, and pulls it out + down to spread that side taut with the 9-inch
     overhang. Robot 0 works the -y side, robot 1 the +y side. (Planted robots reach
@@ -355,8 +403,7 @@ def run_bedmaking(arms, locos, coord, step, capture, diag, stage, cloth_view, sh
     sign = {0: -1.0, 1: 1.0}
 
     def hold_stance():
-        for i in (0, 1):
-            locos[i].act(locos[i].stand())  # legs balance while the arms work
+        pass  # base is pinned and the legs are frozen at the planted pose
 
     def reach_both(t0, t1, tol=0.06, max_steps=300):
         arms[0].set_target(list(t0))

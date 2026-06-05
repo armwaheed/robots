@@ -28,9 +28,35 @@ is reproduced here by resolving the joints with the same name patterns.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Optional
 
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+
+# ── unitree_rl_gym G1 flat-walk policy (open/public, BSD-3) ──────────────────
+# The Isaac Lab agile policy above is a tabletop-balance *teacher* — it holds a
+# stand but never strides. Unitree's open ``unitree_rl_gym`` ships a real G1
+# walking policy (an LSTM actor + a gait clock); driven with its exact 47-dim
+# observation it walks across the floor (issue #2 item #4, verified on video).
+# Constants below are from the policy's own deploy config (policies/g1_rlgym_walk.yaml).
+RLGYM_POLICY_PATH = str(Path(__file__).with_name("policies") / "g1_rlgym_walk.pt")
+# 12 leg joints, LEFT then RIGHT, each [hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll]
+RLGYM_LEG_ORDER = [
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+    "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+    "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+]
+RLGYM_DEFAULT_ANGLES = [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0, -0.1, 0.0, 0.0, 0.3, -0.2, 0.0]
+# PD gains the policy was trained with — MUST be set on the Isaac leg actuators
+# (see scene.build_scene_cfg). kp/kd ordered like RLGYM_LEG_ORDER.
+RLGYM_KPS = [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40]
+RLGYM_KDS = [2, 2, 2, 4, 2, 2, 2, 2, 2, 4, 2, 2]
+RLGYM_ANG_VEL_SCALE = 0.25
+RLGYM_DOF_VEL_SCALE = 0.05
+RLGYM_ACTION_SCALE = 0.25
+RLGYM_CMD_SCALE = [2.0, 2.0, 0.25]   # [vx, vy, vyaw]
+RLGYM_GAIT_PERIOD = 0.8              # gait-clock period (s)
 
 # Leg joints the policy *controls* (output), and the body joints it *observes*.
 LEG_RE = [".*_hip_.*_joint", ".*_knee_joint", ".*_ankle_.*_joint"]
@@ -143,3 +169,102 @@ class LocomotionPolicy:
     def stand(self):
         """A pure standing command (balance in place)."""
         return [0.0, 0.0, 0.0, STAND_HIP_HEIGHT]
+
+
+class RLGymWalker:
+    """Drives one G1's legs with Unitree's open ``unitree_rl_gym`` walk policy.
+
+    Reproduces the policy's reference deploy exactly: the 47-dim observation
+    ``[ang_vel·0.25, gravity_orientation, cmd·[2,2,0.25], (q−default), dq·0.05,
+    last_action, sin/cos gait phase]``, ``action·0.25 + default`` leg targets, and a
+    gait clock advanced one control step per :meth:`act`. The policy is a **stateful
+    LSTM**, so each robot gets its **own** module instance (interleaving two robots
+    on one module would corrupt both hidden states). The matching leg PD gains must
+    be set on the robot's actuators (see :func:`scene.build_scene_cfg`).
+
+    Same call surface as :class:`LocomotionPolicy` (``act``/``command_to``/``stand``/
+    ``base_xy``) so the demo's control loop is unchanged — except the command is
+    ``[vx, vy, vyaw]`` (3-dim, body frame) instead of the agile ``[vx, vy, wz, h]``.
+    """
+
+    def __init__(self, robot, device: str, control_dt: float, policy_path: Optional[str] = None):
+        import torch
+
+        self._torch = torch
+        self.robot = robot
+        self.device = device
+        self.control_dt = control_dt
+        # Per-robot instance: the LSTM hidden state lives inside the module.
+        self.policy = torch.jit.load(policy_path or RLGYM_POLICY_PATH, map_location=device)
+        self.policy.eval()
+        self.leg_ids, self.leg_names = robot.find_joints(RLGYM_LEG_ORDER, preserve_order=True)
+        self.default_angles = torch.tensor(RLGYM_DEFAULT_ANGLES, device=device)
+        self.cmd_scale = torch.tensor(RLGYM_CMD_SCALE, device=device)
+        self.last_action = torch.zeros(12, device=device)
+        self.t = 0.0  # gait clock
+
+    def reset(self) -> None:
+        self.last_action = self._torch.zeros(12, device=self.device)
+        self.t = 0.0
+        if hasattr(self.policy, "reset_memory"):
+            self.policy.reset_memory()
+
+    @staticmethod
+    def _gravity_orientation(q):
+        """Projected gravity in the base frame, by the deploy's formula. q=(w,x,y,z)."""
+        import torch
+        qw, qx, qy, qz = q[0], q[1], q[2], q[3]
+        return torch.stack([2 * (-qz * qx + qw * qy),
+                            -2 * (qz * qy + qw * qx),
+                            1 - 2 * (qw * qw + qz * qz)])
+
+    def act(self, cmd) -> None:
+        """Run the policy for command ``[vx, vy, vyaw]`` and set leg targets. Call
+        once per control step (advances the gait clock by one ``control_dt``)."""
+        torch = self._torch
+        d = self.robot.data
+        omega = d.root_ang_vel_b[0] * RLGYM_ANG_VEL_SCALE
+        grav = self._gravity_orientation(d.root_quat_w[0])
+        cmd_t = torch.tensor(cmd, device=self.device, dtype=torch.float32) * self.cmd_scale
+        qj = d.joint_pos[0, self.leg_ids] - self.default_angles
+        dqj = d.joint_vel[0, self.leg_ids] * RLGYM_DOF_VEL_SCALE
+        phase = (self.t % RLGYM_GAIT_PERIOD) / RLGYM_GAIT_PERIOD
+        sc = torch.tensor([math.sin(2 * math.pi * phase), math.cos(2 * math.pi * phase)],
+                          device=self.device)
+        obs = torch.cat([omega, grav, cmd_t, qj, dqj, self.last_action, sc]).unsqueeze(0).float()
+        action = self.policy(obs).detach()[0]
+        self.last_action = action
+        tgt = (action * RLGYM_ACTION_SCALE + self.default_angles).unsqueeze(0)
+        self.robot.set_joint_position_target(tgt, joint_ids=self.leg_ids)
+        self.t += self.control_dt
+
+    # ── helpers (mirror LocomotionPolicy) ───────────────────────────────────────
+    def _base_yaw(self) -> float:
+        q = self.robot.data.root_quat_w[0]  # (w, x, y, z)
+        w, x, y, z = (float(v) for v in q.tolist())
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    def base_xy(self):
+        p = self.robot.data.root_pos_w[0, :2]
+        return float(p[0]), float(p[1])
+
+    def command_to(self, target_xy, *, stop_radius: float = 0.14,
+                   max_vx: float = 0.5, turn_gain: float = 1.5):
+        """Velocity command ``[vx, vy, vyaw]`` that walks the base toward
+        ``target_xy`` (world). Returns ``(cmd, arrived)``: walks forward in the
+        heading direction, steers by yaw error, stops within ``stop_radius``."""
+        px, py = self.base_xy()
+        dx, dy = target_xy[0] - px, target_xy[1] - py
+        dist = math.hypot(dx, dy)
+        if dist < stop_radius:
+            return [0.0, 0.0, 0.0], True
+        yaw = self._base_yaw()
+        heading = math.atan2(dy, dx)
+        yaw_err = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+        vx = max_vx * max(0.0, math.cos(yaw_err)) * min(1.0, dist / 0.5)
+        vyaw = max(-1.0, min(1.0, turn_gain * yaw_err))
+        return [vx, 0.0, vyaw], False
+
+    def stand(self):
+        """A pure standing command (zero velocity; the gait clock still ticks)."""
+        return [0.0, 0.0, 0.0]

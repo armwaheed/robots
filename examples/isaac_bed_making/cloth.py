@@ -260,6 +260,48 @@ def sync_mesh_from_view(view, mesh, idx: int = 0):
     return p
 
 
+# ── Fabric (use_fabric=True) rendering path ─────────────────────────────────
+# With use_fabric=True the RTX renderer reads geometry from Fabric, not USD, so a
+# USD points blit is ignored and the cloth renders flat. We must run fabric on for
+# the *robot* to render its motion: Isaac Lab's SimulationContext.forward() only
+# calls update_articulations_kinematic() when fabric is enabled, so with fabric off
+# the articulation renders frozen at its spawn pose. NVIDIA confirms (forums:
+# "Using Fabric with Particles") that point-instancer changes can't go through
+# Fabric but **mesh updates do** — our bedsheet is a UsdGeom.Mesh, so we write its
+# deformed points straight into Fabric/usdrt each render. PhysX does NOT auto-sync
+# particle-cloth positions to Fabric, so we still read them from the tensor cloth
+# view. The cloth mesh carries ``omni:fabric:resetXformStack``, so the world-space
+# tensor positions are used directly (no transform fixup needed).
+def make_fabric_points(prim_path: str = "/World/Sheet"):
+    """Attach the Fabric/usdrt stage and return the cloth mesh's ``points``
+    attribute for in-place per-frame updates (use with :func:`sync_fabric_from_view`
+    when running ``SimulationCfg(use_fabric=True)``). Call after ``sim.reset()`` and
+    the first sim step. Returns ``None`` if the prim isn't in Fabric yet."""
+    import omni.usd
+    import usdrt
+
+    rt_stage = usdrt.Usd.Stage.Attach(omni.usd.get_context().get_stage_id())
+    prim = rt_stage.GetPrimAtPath(prim_path)
+    if not (prim and prim.IsValid()):
+        return None
+    attr = prim.GetAttribute("points")
+    if attr and attr.IsValid():
+        return attr
+    return prim.CreateAttribute("points", usdrt.Sdf.ValueTypeNames.Point3fArray, True)
+
+
+def sync_fabric_from_view(view, fabric_points, idx: int = 0):
+    """Blit live deformed cloth positions into the Fabric mesh ``points`` so the
+    RTX renderer (``use_fabric=True``) shows the real cloth. Returns the (N,3)
+    positions. ``fabric_points`` comes from :func:`make_fabric_points`."""
+    import numpy as np
+    import usdrt
+
+    p = view_positions(view, idx)
+    fabric_points.Set(usdrt.Vt.Vec3fArray(np.ascontiguousarray(p, dtype=np.float32)))
+    return p
+
+
 def corner_world_positions(view, sheet: "Bedsheet"):
     """Return {label: (x,y,z)} live world positions of the four sheet corners,
     read from the tensor cloth ``view`` (see :func:`make_cloth_view`)."""
