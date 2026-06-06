@@ -12,8 +12,9 @@ End to end, each G1:
    hands), gripping the cloth by friction.
 
 The bed has a **headboard + pillows** (static; never touched) and a
-**particle-cloth sheet** sized to overhang the sides + foot by ~9 inches; it
-starts **folded over at the foot** and the robots arrange it.
+**particle-cloth sheet** that starts **flat, gathered toward the foot** (as if
+pulled down to the foot of the bed, head half bare); the robots make the bed by
+grabbing the two **forward (head-side) corners** and pulling them toward the head.
 
 Coordination is real Device Connect: each robot claims work, emits events, and
 asks for / offers help. With ``--broker`` both peers register live on the
@@ -96,7 +97,7 @@ from isaaclab_assets.robots.unitree import G1_INSPIRE_FTP_CFG  # noqa: E402
 from examples.isaac_bed_making import cloth as clothmod  # noqa: E402
 from examples.isaac_bed_making import locomotion as locomod  # noqa: E402
 from examples.isaac_bed_making import scene as scenemod  # noqa: E402
-from examples.isaac_bed_making.manipulation import PinkArmIK, apply_hand_friction  # noqa: E402
+from examples.isaac_bed_making.manipulation import FingerGrip, PinkArmIK, apply_hand_friction  # noqa: E402
 from examples.isaac_bed_making.replay import TrajectoryReplay  # noqa: E402
 
 SIM_DT = 0.002            # the rl_gym walk policy's native sim rate (500 Hz)
@@ -124,11 +125,13 @@ def main() -> int:
     for i in (0, 1):
         rp = f"/World/envs/env_0/Robot_{i}"
         locomod.make_floating_base(pre_stage, rp)
-    # Moderate (not sticky) hand friction: the hands *smooth/press* the draped
-    # sheet rather than grabbing and lifting it (high friction yanks it off the bed).
-    nb = [apply_hand_friction(pre_stage, f"/World/envs/env_0/Robot_{i}", "right",
-                              static_friction=1.2, dynamic_friction=1.2) for i in (0, 1)]
-    mark(f"floating base set; hand friction bound to {len(nb[0])}+{len(nb[1])} colliders")
+    # HIGH hand friction on BOTH hands: the grip is friction-only (no kinematic
+    # attachment) — closed fingers cage a handful of cloth and the rubberized,
+    # high-friction palms/fingertips hold it so the robot can actually drag the sheet.
+    nb = [apply_hand_friction(pre_stage, f"/World/envs/env_0/Robot_{i}", sd,
+                              static_friction=10.0, dynamic_friction=10.0)
+          for i in (0, 1) for sd in ("right", "left")]
+    mark(f"floating base set; hand friction bound to {sum(len(x) for x in nb)} colliders")
 
     cam = None
     if ARGS.render or ARGS.gui:
@@ -160,19 +163,27 @@ def main() -> int:
     locos = walk  # phase 1 (the approach-walk) drives the robots with the walkers
     mark("locomotion ready (rl_gym walk-in + agile balance stance)")
 
-    # ── folded bedsheet ──
+    # ── bedsheet: flat, gathered toward the foot (head half of the bed bare) ──
     scene_path = clothmod.find_physics_scene_path(stage)
     clothmod.enable_gpu_dynamics(stage, scene_path)
     sheet = clothmod.build_bedsheet(
         stage, scene_path, "/World/Sheet",
         size=scenemod.SHEET_SIZE, resolution=scenemod.SHEET_RES,
         origin=scenemod.SHEET_ORIGIN, color=(0.86, 0.86, 0.92),
-        thickness=scenemod.SHEET_THICKNESS, fold=True,
-        fold_start=scenemod.SHEET_FOLD_START)
-    mark("folded bedsheet built")
+        thickness=scenemod.SHEET_THICKNESS, accordion=True)
+    mark("bedsheet built (flat head edge + accordion ruffle at the foot)")
 
-    # ── manipulation: closed-loop Pink IK (arm + waist) + optional dataset replay ──
-    arms = {i: PinkArmIK(robots[i], "right", sim.device, SIM_DT * DECIMATION) for i in (0, 1)}
+    # ── manipulation: TWO-handed Pink IK + finger grips (or optional dataset replay) ──
+    # Each G1 drives both arms (the right also owns the 3-DOF waist so it leans into the
+    # reach; the left is waist-free so they don't fight) plus a FingerGrip per hand to
+    # close the Inspire fingers on a handful of cloth. Two hands gather + pin the cloth,
+    # one hand grips it and pulls — a friction grasp, no kinematic attachment.
+    manip = {
+        "R": {i: PinkArmIK(robots[i], "right", sim.device, SIM_DT * DECIMATION, with_waist=True) for i in (0, 1)},
+        "L": {i: PinkArmIK(robots[i], "left", sim.device, SIM_DT * DECIMATION, with_waist=False) for i in (0, 1)},
+        "gR": {i: FingerGrip(robots[i], "right", sim.device) for i in (0, 1)},
+        "gL": {i: FingerGrip(robots[i], "left", sim.device) for i in (0, 1)},
+    }
     reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)} if ARGS.replay else {}
 
     # ── Device Connect swarm ──
@@ -191,17 +202,25 @@ def main() -> int:
         for _ in range(n):
             scene.write_data_to_sim()
             sim.step(render=False)
-            # Once planted (after the walk-in), the pelvis is held kinematically at
-            # its arrived pose EVERY sim step. A free-floating G1 cannot balance
-            # through a bed-making reach/lean with the policies we have — it topples;
-            # planting the base (the robot "stands firmly") lets the arms do the real
-            # recorded motion while the legs/feet stay put. Writing every sim step
-            # (not just every control step) is what actually holds it.
+            scene.update(sim_dt)
+            # Once planted, hold each pelvis steady EVERY sim step so the free base can't
+            # topple through the bed-making lean. We pin only the xy position and a LEVEL
+            # (upright, yaw-only) orientation, and leave Z FREE so the feet settle on the
+            # floor under gravity — pinning z too left the legs floating with no ground
+            # contact, and they drifted up. The z-linear velocity is kept (gravity beds the
+            # feet down); xy + all angular velocity are zeroed so it neither slides nor tips.
+            # Runs after scene.update() so root_pose_w/root_vel_w are the fresh post-step state.
             if state["pin"] is not None:
                 for i in (0, 1):
-                    robots[i].write_root_pose_to_sim(state["pin"][i])
-                    robots[i].write_root_velocity_to_sim(zero_vel)
-            scene.update(sim_dt)
+                    pose = robots[i].data.root_pose_w[:1].clone()
+                    px, py, qw, qx, qy, qz = state["pin"][i]
+                    pose[0, 0], pose[0, 1] = px, py
+                    pose[0, 3], pose[0, 4], pose[0, 5], pose[0, 6] = qw, qx, qy, qz
+                    robots[i].write_root_pose_to_sim(pose)
+                    vel = robots[i].data.root_vel_w[:1].clone()
+                    vel[0, 0], vel[0, 1] = 0.0, 0.0
+                    vel[0, 3], vel[0, 4], vel[0, 5] = 0.0, 0.0, 0.0
+                    robots[i].write_root_velocity_to_sim(vel)
             state["t"] += sim_dt
 
     def capture():
@@ -284,8 +303,8 @@ def main() -> int:
                          f"hand=({hx:.2f},{hy:.2f},{hz:.2f}) gap={gap:.2f} foot_z={foot_z(i):.2f}")
         print("  ".join(parts), flush=True)
 
-    # ── PHASE 0: stand + let the folded sheet settle (agile balance) ──
-    print("[demo] robots find their footing; the folded sheet settles…")
+    # ── PHASE 0: stand + let the sheet settle onto the bed (agile balance) ──
+    print("[demo] robots find their footing; the sheet settles onto the foot of the bed…")
     control(lambda i: (stance[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)),
             cap_every=4, pols=stance)
     diag("after stand-settle")
@@ -308,23 +327,48 @@ def main() -> int:
     # feet while the arms reach (verified: pelvis steady ~0.72 m, hand reaches a
     # commanded point to <1 mm when well-conditioned).
     if not ARGS.walk_only:
-        # Settle the gait into a double-support stand (both feet down) before planting.
-        print("[demo] settling into a stance at the bedside…", flush=True)
-        control(lambda i: (stance[i].stand(), False),
-                n_ctl=int(1.0 / (DECIMATION * sim_dt)), cap_every=4, pols=stance)
-        # Plant: hold each pelvis at its arrived pose so the arms can make the bed
-        # without the free base toppling. Freeze the legs at the settled pose too, so
-        # they stay planted (the stance policy is no longer needed once pinned).
-        state["pin"] = [robots[i].data.root_pose_w[:1].clone() for i in (0, 1)]
+        # Plant the base the INSTANT the walk arrives. We do NOT let the agile stance
+        # policy hold the free base unpinned even briefly: on the walk→stand handoff it
+        # topples (the rl_gym walk LSTM leaves the legs mid-stride and the agile policy
+        # can't recover the gait), which dropped both robots to the floor *before* the
+        # pin was set. Instead we pin each pelvis at its arrived pose — leveled to
+        # yaw-only at a clean standing height so we never freeze a mid-stride/toppling
+        # pose — and command the legs to the bent-knee stand. The per-sim-step pin in
+        # step() then holds the base rigidly while the arms make the bed.
+        print("[demo] planting firmly at the bedside…", flush=True)
+        pins = []
         for i in (0, 1):
-            robots[i].set_joint_position_target(
-                robots[i].data.joint_pos[:, stance[i].leg_ids].clone(), joint_ids=stance[i].leg_ids)
-        step(2)
+            # Normalise to the INTENDED bedside working pose: the learned walk is the
+            # visual approach but isn't perfectly reliable (it occasionally stumbles a
+            # robot), so we place each G1 at its mark (xy + yaw facing the bed) in a clean,
+            # near-straight STANDING pose, drop it from just above the floor, and let the
+            # z-free pin bed the feet down. This guarantees both make the bed from a solid,
+            # upright, feet-on-the-floor stance regardless of how the walk ended.
+            mx, my = scenemod.ROBOTS[i]["manip"]
+            qw, qx, qy, qz = scenemod.yaw_to_quat(scenemod.ROBOTS[i]["yaw_deg"])
+            pins.append((mx, my, qw, qx, qy, qz))
+            stand = robots[i].data.default_joint_pos.clone()
+            for expr, val in ((".*_hip_pitch_joint", -0.05), (".*_knee_joint", 0.12),
+                              (".*_ankle_pitch_joint", -0.06)):
+                jid, _ = robots[i].find_joints([expr])
+                stand[:, jid] = val
+            pose0 = robots[i].data.root_pose_w[:1].clone()
+            pose0[0, 0], pose0[0, 1], pose0[0, 2] = mx, my, scenemod.STAND_PELVIS_Z + 0.04
+            pose0[0, 3], pose0[0, 4], pose0[0, 5], pose0[0, 6] = qw, qx, qy, qz
+            robots[i].write_root_pose_to_sim(pose0)
+            robots[i].write_root_velocity_to_sim(zero_vel)
+            robots[i].write_joint_state_to_sim(stand, torch.zeros_like(robots[i].data.joint_vel))
+            robots[i].set_joint_position_target(stand[:, stance[i].leg_ids], joint_ids=stance[i].leg_ids)
+        state["pin"] = pins
+        # Settle: the z-free pin lets the feet drop onto the floor and the stance steady.
+        for _ in range(int(1.0 / (DECIMATION * sim_dt))):
+            step(DECIMATION)
+        capture()
         diag("planted firmly at the bedside")
         if ARGS.replay:
             run_replay(reps, robots, stance, coord, step, capture, diag, sim_dt)
         else:
-            run_bedmaking(arms, stance, coord, step, capture, diag, stage, cloth_view, sheet)
+            run_bedmaking(manip, coord, step, capture, diag, stage, cloth_view, sheet)
     else:
         diag("walk-only: standing at the bedside")
 
@@ -391,91 +435,112 @@ def run_replay(reps, robots, stance, coord, step, capture, diag, sim_dt):
     capture()
 
 
-def run_bedmaking(arms, stance, coord, step, capture, diag, stage, cloth_view, sheet):
-    """Closed-loop bed-making with the agile policy holding each robot's stance the
-    whole time. Each G1 finds its near edge of the sheet from the LIVE cloth positions,
-    reaches it with world-frame arm IK (floating-base jacobian + per-step clamp),
-    grasps it, and pulls it out + down to spread that side taut with the 9-inch
-    overhang. Robot 0 works the -y side, robot 1 the +y side. (Planted robots reach
-    their near edge but not the far corners — that needs corner-to-corner walking,
-    a later step.)"""
-    SIDE, TOP, MX = scenemod.SIDE_Y, scenemod.BED_TOP_Z, scenemod.MANIP_X
+def run_bedmaking(manip, coord, step, capture, diag, stage, cloth_view, sheet):
+    """Two-handed friction bed-making (no kinematic attachment). The sheet starts flat
+    and gathered toward the foot. Each G1, planted at the bedside, uses BOTH hands to
+    win a grip and then pulls with one:
+
+      1. both palms press the sheet's head edge near the forward corner;
+      2. the assisting (left) hand slides inboard, bunching a handful of cloth into the
+         gripping (right) hand;
+      3. the right hand CLOSES its Inspire fingers on the handful (high-friction grip)
+         while the left presses it home, then the left opens and lifts away;
+      4. the right hand drags the handful toward the head, drawing the sheet up the bed.
+
+    Robot 0 works the −y side, robot 1 the +y side (mirror). The grip is friction +
+    finger-cage only — the closed fingers and rubberized palms hold the cloth."""
+    TOP = scenemod.BED_TOP_Z
     sign = {0: -1.0, 1: 1.0}
+    HEAD_EDGE_X = scenemod.SHEET_ORIGIN[0] - scenemod.SHEET_SIZE[0] / 2.0  # ~0.10
+    HEAD_PULL_X = scenemod.HEAD_X + 0.65  # = -0.35, reach-limited on a planted base
+    GY = 0.66           # gripping (right) hand y, inboard so the grip is on the mattress
+    LY = GY + 0.20      # assisting (left) hand y, just outboard — it pins the cloth flat
+    # A friction grip needs NORMAL FORCE, not just contact. APPROACH_Z sets the wrist
+    # just above the cover for a soft landing; GRIP_Z drives the wrist DOWN INTO the
+    # cover (below the cover top) so the arm presses hard — the hand can't pass the
+    # mattress, so it pushes, and the closed high-friction fingers clamp the cloth. With
+    # the mattress slick (low friction) the clamped cover then slides headward as a unit.
+    APPROACH_Z = TOP + 0.05   # ≈0.71 — wrist just above the cover, light contact
+    # Gentle grip: a hard press into the mattress whips the arm and topples the planted
+    # robot. The accordion unspools with little resistance, so a light close on the head
+    # edge is enough — keep the wrist right at the cloth, no driving into the bed.
+    GRIP_Z = TOP - 0.01       # ≈0.65 — wrist at the cloth, fingers close on the head edge
+    LIFT_Z = TOP + 0.26       # left-hand retreat height
+    PULL_DX = -0.40           # headward drag distance (relative to the grip point)
+    R, L, gR, gL = manip["R"], manip["L"], manip["gR"], manip["gL"]
 
-    def hold_stance():
-        pass  # base is pinned and the legs are frozen at the planted pose
-
-    def reach_both(t0, t1, tol=0.06, max_steps=300):
-        arms[0].set_target(list(t0))
-        arms[1].set_target(list(t1))
-        d0 = d1 = None
-        for s in range(max_steps):
-            hold_stance()
-            d0 = arms[0].tick()
-            d1 = arms[1].tick()
-            step(DECIMATION)
-            if s % 6 == 0:
-                capture()
-            if (d0 or 9) < tol and (d1 or 9) < tol:
-                break
-        return d0, d1
-
-    def settle(n_ctl):
+    def drive(n_ctl, rt, lt, rg, lg, cap=4):
+        """Hold/seek both arms toward per-robot targets rt[i]/lt[i] (None = leave as-is)
+        with finger fractions rg[i]/lg[i], for n_ctl control steps."""
+        for i in (0, 1):
+            if rt is not None and rt[i] is not None:
+                R[i].set_target(rt[i])
+            if lt is not None and lt[i] is not None:
+                L[i].set_target(lt[i])
+        dr = dl = None
         for s in range(n_ctl):
-            hold_stance()
+            for i in (0, 1):
+                dr = R[i].tick()
+                dl = L[i].tick()
+                gR[i].set(rg[i])
+                gL[i].set(lg[i])
             step(DECIMATION)
-            if s % 4 == 0:
+            if s % cap == 0:
                 capture()
+        return dr, dl
 
-    def near_cloth(ref):
-        pts = clothmod.view_positions(cloth_view)
-        if pts.shape[0] == 0:
-            return ref
-        k = int(np.argmin(np.linalg.norm(pts - np.array(ref), axis=1)))
-        return float(pts[k, 0]), float(pts[k, 1]), float(pts[k, 2])
+    def by_side(fn):
+        return {i: fn(i) for i in (0, 1)}
 
-    # 1) reach down to the live near edge of the sheet (find the cloth, don't guess)
     if coord:
         coord.invoke(0, "pickUpBedSheet", corner="A")
         coord.invoke(1, "pickUpBedSheet", corner="B")
-    g = {i: near_cloth((MX, sign[i] * (SIDE - 0.05), TOP + 0.04)) for i in (0, 1)}
-    print(f"[demo] reaching the near sheet edge: r0->{tuple(round(v,2) for v in g[0])} "
-          f"r1->{tuple(round(v,2) for v in g[1])}", flush=True)
-    # Hover the hand just ABOVE the near edge — reaching all the way down to the bed
-    # surface (z≈0.69) over-extends the arm and the IK stalls ~10 cm short. Hovering
-    # at a comfortable height keeps the reach in-workspace; the grasp's bind offset
-    # (0.14 m) catches the draped cloth below the hand.
-    d = reach_both((g[0][0], g[0][1], max(g[0][2] + 0.10, 0.78)),
-                   (g[1][0], g[1][1], max(g[1][2] + 0.10, 0.78)),
-                   tol=0.05, max_steps=300)
-    diag(f"reached edge (ik dist {d})")
 
-    # 2) grasp the cloth at each hand (PhysX attachment binds the overlapping cloth)
-    for i in (0, 1):
-        clothmod.grasp(stage, "/World/Sheet", f"/World/envs/env_0/Robot_{i}/right_wrist_yaw_link",
-                       f"/World/grasp_{i}", bind_offset=0.14)
-    settle(12)
-    diag("grasped the sheet edge")
+    # 1) both palms descend onto the head edge — right where it will grip, left just
+    #    inboard to pin the cloth flat — fingers open, soft landing.
+    print("[demo] both hands settle on the head edge…", flush=True)
+    rt = by_side(lambda i: (HEAD_EDGE_X, sign[i] * GY, APPROACH_Z))
+    lt = by_side(lambda i: (HEAD_EDGE_X, sign[i] * LY, APPROACH_Z))
+    drive(55, rt, lt, {0: 0.0, 1: 0.0}, {0: 0.0, 1: 0.0})
+    diag("hands on the edge")
 
-    # 3) gentle outward + down drag FROM where each hand actually grasped, to spread
-    # that side taut with the overhang. A relative tug (rather than a far world
-    # target) keeps the pull inside the arm's comfortable workspace so the reaction
-    # force does not yank the policy-balanced base off its feet.
-    print("[demo] pulling the sheet out to spread it over the bed…", flush=True)
-    h = {i: arms[i].ee_pos() for i in (0, 1)}
-    s = {i: (h[i][0], h[i][1] + sign[i] * 0.14, h[i][2] - 0.12) for i in (0, 1)}
-    reach_both(s[0], s[1], tol=0.06, max_steps=240)
-    diag("spread to the side")
+    # 2) press DOWN hard (wrist into the cover) and close the right fingers on the cloth.
+    #    The left presses alongside to PIN the cover flat so the right's press grips it
+    #    rather than shoving it away. The left stays open (a flat pin, not a grab).
+    print("[demo] pressing in and gripping a handful (right hand)…", flush=True)
+    rt = by_side(lambda i: (HEAD_EDGE_X, sign[i] * GY, GRIP_Z))
+    lt = by_side(lambda i: (HEAD_EDGE_X, sign[i] * LY, GRIP_Z))
+    drive(28, rt, lt, {0: 0.5, 1: 0.5}, {0: 0.0, 1: 0.0})   # press, fingers half-curl
+    drive(22, rt, lt, {0: 1.0, 1: 1.0}, {0: 0.0, 1: 0.0})   # fingers close hard on the cloth
+    diag("gripped")
 
-    # 4) release + a help exchange over Device Connect, then settle
-    for i in (0, 1):
-        clothmod.release(stage, f"/World/grasp_{i}")
+    # 3) the left hand lifts clear so only the gripping hand remains on the cloth.
+    print("[demo] freeing the assisting hand…", flush=True)
+    lt = by_side(lambda i: (HEAD_EDGE_X, sign[i] * LY, LIFT_Z))
+    drive(24, rt, lt, {0: 1.0, 1: 1.0}, {0: 0.0, 1: 0.0})
+    diag("left hand clear")
+
+    # 4) the gripping hand drags the cover toward the head, fingers held closed and the
+    #    wrist held LOW so it keeps pressing as it slides. The target is RELATIVE to where
+    #    the hand actually gripped (same y/z, x moved headward) so the reach stays in the
+    #    arm's workspace — a far world target sent the arm flying up.
+    print("[demo] pulling the cover toward the head with one hand…", flush=True)
+    h = {i: R[i].ee_pos() for i in (0, 1)}
+    rt = by_side(lambda i: (max(HEAD_PULL_X, h[i][0] + PULL_DX), h[i][1], h[i][2]))
+    drive(95, rt, None, {0: 1.0, 1: 1.0}, {0: 0.0, 1: 0.0}, cap=3)
+    diag("pulled the sheet toward the head")
+
+    # 5) release + a help exchange over Device Connect, then settle
+    drive(10, None, None, {0: 0.0, 1: 0.0}, {0: 0.0, 1: 0.0})
     if coord:
         coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
         coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
         coord.invoke(0, "putDownBedSheet", corner="A")
         coord.invoke(1, "putDownBedSheet", corner="B")
-    settle(60)
+    for s in range(40):
+        step(DECIMATION)
+        if s % 4 == 0:
+            capture()
     diag("after bed-making")
     capture()
 

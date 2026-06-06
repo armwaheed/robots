@@ -154,7 +154,8 @@ class PinkArmIK:
     controller fails to build.
     """
 
-    def __init__(self, robot, side: str, device: str, control_dt: float, max_step: float = 0.05):
+    def __init__(self, robot, side: str, device: str, control_dt: float, max_step: float = 0.05,
+                 with_waist: bool = True):
         import numpy as np
         import torch
         from isaaclab.controllers.pink_ik import PinkIKController
@@ -169,8 +170,14 @@ class PinkArmIK:
         self.device = device
         self.dt = control_dt
         self.max_step = max_step
+        # The two hands run as two independent single-arm Pink solvers. Only ONE of them
+        # may own the shared 3-DOF waist or they fight over those joints — so the pulling
+        # (right) arm controls the waist (it leans into the reach) and the assisting
+        # (left) arm is built with_waist=False (it controls only its 7 arm joints).
+        self.with_waist = with_waist
+        waist = WAIST_JOINTS if with_waist else []
         ee = EE_LINK[side]
-        posture_joints = [ARM_JOINTS[side][0], ARM_JOINTS[side][1], ARM_JOINTS[side][2]] + WAIST_JOINTS
+        posture_joints = [ARM_JOINTS[side][0], ARM_JOINTS[side][1], ARM_JOINTS[side][2]] + waist
         cfg = PinkIKControllerCfg(
             urdf_path=PINK_URDF,
             num_hand_joints=0,
@@ -185,7 +192,7 @@ class PinkArmIK:
             ],
             fixed_input_tasks=[],
         )
-        controlled = ARM_JOINTS[side] + WAIST_JOINTS
+        controlled = ARM_JOINTS[side] + waist
         self.cj_ids, cj_names = robot.find_joints(controlled, preserve_order=True)
         cfg.joint_names = cj_names
         cfg.all_joint_names = list(robot.data.joint_names)
@@ -241,6 +248,47 @@ class PinkArmIK:
 
     def ee_pos(self) -> List[float]:
         return [float(v) for v in self._wrist_world()]
+
+
+class FingerGrip:
+    """Close / open one G1 Inspire hand to physically grip a handful of cloth.
+
+    The Inspire hand joints are ``R_``/``L_``-prefixed. Closing curls every finger
+    (and the thumb across the palm) from its open default toward whichever joint
+    limit is farther from the default — so the axis sign does not matter, ``set(1.0)``
+    always makes a fist and ``set(0.0)`` opens it. Combined with high hand friction
+    (:func:`apply_hand_friction`) the closed fingers cage and grip the cloth so it can
+    be dragged — the friction grasp the demo relies on (no kinematic attachment)."""
+
+    def __init__(self, robot, side: str, device: str):
+        import torch
+
+        self._torch = torch
+        self.robot = robot
+        prefix = "R_" if side == "right" else "L_"
+        jnames = list(robot.data.joint_names)
+        lo = robot.data.joint_pos_limits[0, :, 0]
+        hi = robot.data.joint_pos_limits[0, :, 1]
+        dft = robot.data.default_joint_pos[0]
+        ids, base, span = [], [], []
+        for ji, nm in enumerate(jnames):
+            if not nm.startswith(prefix):
+                continue
+            d = float(dft[ji])
+            closed = float(lo[ji]) if abs(float(lo[ji]) - d) > abs(float(hi[ji]) - d) else float(hi[ji])
+            ids.append(ji)
+            base.append(d)
+            span.append(closed - d)
+        self.ids = ids
+        self.base = torch.tensor(base, device=device, dtype=torch.float32)
+        self.span = torch.tensor(span, device=device, dtype=torch.float32)
+
+    def set(self, frac: float) -> None:
+        """frac 0 = open, 1 = fully closed (fist)."""
+        if not self.ids:
+            return
+        tgt = (self.base + float(frac) * self.span).unsqueeze(0)
+        self.robot.set_joint_position_target(tgt, joint_ids=self.ids)
 
 
 def apply_hand_friction(stage, robot_prim_path: str, side: str,

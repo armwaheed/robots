@@ -6,11 +6,12 @@ Layout (world frame, metres). The bed's long axis is **x**: the **head** is at
 * Bed (mattress): 2.0 (x) x 1.8 (y) x 0.66 (z) box, top at z=0.66.
 * Headboard: a board standing at the head (-x), rising above the mattress.
 * Two pillows: resting at the head, in place (the robots never touch them).
-* Bedsheet: a particle-cloth sheet sized to **overhang each long side and the
-  foot by ~9 inches (0.23 m)** and fold back from the headboard at the head —
-  the made-bed target from the Figure Helix clip and the Unitree dataset. It
-  **starts folded over-and-back on itself at the foot** (an accordion fold); the
-  robots then arrange it.
+* Bedsheet: a particle-cloth sheet that **starts flat, lying on the foot half of
+  the bed and draping off the foot** — as if it had been pulled down toward the
+  foot. The head half of the mattress is bare. The robots make the bed by grabbing
+  the two **forward (head-side) corners** and pulling them toward the head, drawing
+  the sheet up over the mattress. (This replaced an accordion fold-back start, which
+  was too hard for the simulated G1s to unfold — issue #2.)
 * Robot 0 starts ~0.5 m off the -y long side and **walks in** under a learned
   policy; robot 1 mirrors on the +y side. (They used to be planted in reach;
   now they step in — issue #2 item #4.)
@@ -42,12 +43,13 @@ PILLOWS = {
     "right": (HEAD_X + 0.42, 0.43, BED_TOP_Z + PILLOW_SIZE[2] / 2.0),
 }
 
-# ── Robots: walk in from ~0.5 m off their long side, work the foot half ──────
-# (pos, yaw_deg). yaw about Z: +90 faces +y, -90 faces -y. They flank the
-# foot-half of the bed (x>0) where the folded sheet starts.
+# ── Robots: walk in from ~0.5 m off their long side, flank the bed mid-side ──
+# (pos, yaw_deg). yaw about Z: +90 faces +y, -90 faces -y. They stand near the
+# middle of each long side so they can grab the sheet's head-side corners (gathered
+# just foot-of-centre) and pull them toward the head.
 ROBOT_Z = 0.75
 STAND_PELVIS_Z = 0.80  # clean upright standing pelvis height for manipulation (feet on floor)
-MANIP_X = 0.20      # flank the bed; hands sweep over the draped sheet
+MANIP_X = 0.05      # flank the bed near mid-side, within reach of the head-side corners
 APPROACH_Y = 1.85   # spawn here (~0.5 m off the y=+/-0.9 side, plus body width)
 MANIP_Y = 1.00      # walk-in target (they converge ~0.1 m short, ~1.12, just off the bed side)
 ROBOTS = {
@@ -74,15 +76,34 @@ BED_CORNERS: Dict[str, Tuple[float, float, float]] = {
 }
 
 # ── Bedsheet ────────────────────────────────────────────────────────────────
-# Sized for the made-bed target: full width + 9 in overhang on both long sides
-# and the foot. Drapes onto the bed from the foot half, pulled back from the
-# headboard so the pillows stay exposed (head folded back). The robots smooth it;
-# the foot end is folded back over itself (fold=True) so it starts unmade.
-SHEET_SIZE = (1.7, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26)
-SHEET_RES = (32, 30)
-SHEET_THICKNESS = 0.05
-SHEET_FOLD_START = 0.66             # fraction of the length before the foot folds back
-SHEET_ORIGIN = (0.40, 0.0, BED_TOP_Z + 0.22)  # drapes onto the foot half of the bed
+# Full bed width + ~9 in overhang on both long sides. It starts FLAT and gathered
+# toward the foot: the head-side edge sits just foot-of-centre (~x=+0.1), the rest
+# lies over the foot half and drapes off the foot of the bed — the head half of the
+# mattress is bare. The robots grab the two head-side corners and pull the cover up
+# toward the head. (No fold-back: that accordion start was too hard to unfold.)
+#
+# It is a fairly FINE, thin, drapey sheet so the side overhang actually folds down
+# over the mattress edges and the cloth stays calm (a thick, coarse "duvet" grips a
+# touch better but turns rigid — the overhang juts out stiff — and flutters).
+#
+# The foot is ACCORDION-pleated (demo passes accordion=True): the head-side strip the
+# robots grip lies flat, and the rest is gathered into a ruffle of slack over the foot
+# half. Pulling the flat head edge toward the head UNSPOOLS that slack rather than
+# dragging a sheet stuck flat to the mattress — so the friction grip suffices and the
+# robots aren't yanked over. See cloth.build_bedsheet's accordion_* args.
+SHEET_SIZE = (1.3, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26)
+# MuJoCo recipe (issue #2, 2026-06-06): COARSE + FEATHERLIGHT + THICK is what made the
+# MuJoCo flex sheet look good and hang still — not "triangles". MuJoCo used 143 verts /
+# 0.18 kg / ~4.4 cm. Match it: a coarse grid (with cloth.py's light particle_mass this
+# totals ~0.2 kg) settles instead of sloshing. NOTE: the *physics* is thick, but the
+# RENDER is still a single-layer membrane (looks thin) — giving it visual thickness
+# needs a render-side shell (extrude / double-layer the mesh). That is the next task.
+SHEET_RES = (14, 12)                            # coarse like MuJoCo's 13×11 → stable drape
+SHEET_THICKNESS = 0.05                          # thick physics/collision (visual shell TODO)
+# Centre placed so the flat head edge sits at ~x=+0.05 (right where the robots stand,
+# head half of the bed bare) and the pleated ruffle gathers over the foot half. Rests
+# just above the mattress top so it settles onto it (not floating in the air).
+SHEET_ORIGIN = (0.70, 0.0, BED_TOP_Z + 0.04)
 
 # Camera: 3/4 view framing the whole bed (head + foot), both robots.
 CAM_EYE = (3.9, -3.5, 2.7)
@@ -155,8 +176,12 @@ def build_scene_cfg(g1_cfg):
                             spawn=sim_utils.DomeLightCfg(intensity=2500.0, color=(0.9, 0.9, 0.95)))
         key = AssetBaseCfg(prim_path="/World/key",
                            spawn=sim_utils.DistantLightCfg(intensity=2000.0, angle=2.0))
-        # Mattress — high friction so the sheet grips and does not slide off.
-        bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=1.5).replace(
+        # Mattress — LOW friction so the robots can actually drag the cover across it.
+        # A high-friction bed anchors the cover, and the drag force then exceeds the
+        # hand's friction grip and tears the cover out of it (the cover "slips"). With a
+        # slick mattress the cover slides headward under even a marginal grip. (Trade-off:
+        # too slick and the foot-draped cover slides off on its own — 0.4 holds it.)
+        bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=0.4).replace(
             prim_path="/World/Bed")
         headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17)).replace(
             prim_path="/World/Headboard")

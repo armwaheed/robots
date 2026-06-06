@@ -22,6 +22,7 @@ by **friction** (rubberized hands) instead — see ``manipulation.apply_hand_fri
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -71,18 +72,44 @@ def build_bedsheet(
     resolution: Tuple[int, int] = (44, 40),
     origin: Tuple[float, float, float] = (0.0, 0.0, 0.95),
     color: Tuple[float, float, float] = (0.85, 0.82, 0.72),
-    # Elastic, drapey cloth. The MuJoCo flex sheet works because its edges are
-    # *soft* (elastic) constraints, not rigid — so the Isaac springs must be
-    # springy too. Too-stiff stretch (10000) + a fully-triangulated grid locks
-    # the sheet into a rigid plate; a lower, elastic stretch lets it drape.
-    stretch_stiffness: float = 1500.0,
-    bend_stiffness: float = 10.0,
-    shear_stiffness: float = 30.0,
-    damping: float = 0.25,
-    particle_mass: float = 0.02,
+    # ── The "MuJoCo recipe" (validated 2026-06-06 in isolation, no robots) ──────
+    # The shipped sheet draped as a stiff cantilever and "fluttered in the wind".
+    # Root cause was NOT the engine — it was that the sheet was built HEAVY (~35 kg)
+    # and FINE (~1750 verts), so a soft-spring lattice with that much inertia sloshes
+    # in a limit cycle that no damping kills. MuJoCo's flex sheet (the one that looked
+    # good) is the opposite: ~0.18 kg total, 143 verts, ~4.4 cm thick. Porting that
+    # recipe to this SAME PhysX particle cloth — featherlight + coarse (set via the
+    # scene's particle_mass / resolution) + low bend + more solver iters — drops the
+    # frame-to-frame motion from ±5 cm to ±1 cm and the overhang folds DOWN over the
+    # edge. (Quads still matter: a triangulated particle grid locks into a rigid plate
+    # because every mesh edge becomes a stretch spring — see the mesh build below.)
+    stretch_stiffness: float = 300.0,   # elastic (1500 was rigid; 150–300 look identical)
+    bend_stiffness: float = 0.3,        # low so it folds over the edge; >2 = rigid cantilever,
+                                        # <0.1 = the free edge curls/rolls
+    shear_stiffness: float = 10.0,
+    damping: float = 1.5,
+    # PBD particle-material: cloth-surface friction kept LOW so the overhang slides
+    # down the mattress side instead of catching. drag MUST be ~0 — even 0.1 acts like
+    # a parachute on the flat falling flap and it never drapes (0.4 floated it dead flat).
+    friction: float = 0.2,
+    drag: float = 0.0,
+    # More solver position iterations make each step CONVERGE — a too-low count leaves
+    # the cloth in a buzzing limit cycle (the overhang "breathes" forever). 16 is the
+    # Omniverse default; 48 settles it.
+    solver_iterations: int = 48,
+    # Per-particle mass. Keep the sheet FEATHERLIGHT: at the coarse scene resolution
+    # this totals ~0.2 kg (MuJoCo was 0.18 kg). A heavy sheet sloshes; a light one
+    # hangs dead still. (This is per particle, so it scales with vert count — pair it
+    # with a COARSE resolution in the scene.)
+    particle_mass: float = 0.001,
     thickness: float = 0.0,
     fold: bool = False,
     fold_start: float = 0.66,
+    accordion: bool = False,
+    accordion_start: float = 0.3,
+    accordion_gather: float = 0.55,
+    accordion_waves: int = 4,
+    accordion_amp: float = 0.09,
 ) -> Bedsheet:
     """Create a draping particle-cloth sheet as a quad grid mesh.
 
@@ -97,20 +124,41 @@ def build_bedsheet(
 
     Wx, Wy = size
     nx, ny = resolution
+    ox, oy, oz = origin
     layer_dz = max(thickness, 0.04)  # height the folded-back flap sits above the sheet
     x_fold = fold_start * Wx - Wx / 2.0  # local x of the fold line
+
+    # Author the points directly in WORLD space (bake the origin in) and keep the
+    # mesh transform identity — see the rendering note below: with use_fabric=True
+    # the renderer reads the mesh's world transform from Fabric, so a non-identity
+    # xformOp would be applied ON TOP of the world-space deformed points we blit each
+    # frame, floating the sheet up by the origin. Identity transform + world points
+    # means what we blit is exactly what renders.
+    # Accordion: the head-side fraction up to ``accordion_start`` lies flat (the part
+    # the robots grip); the foot fraction is GATHERED into a pleated ruffle — its flat
+    # x-extent is compressed by ``accordion_gather`` and the slack taken up by
+    # ``accordion_waves`` vertical pleats of height ``accordion_amp``. That slack is the
+    # point: pulling the flat head edge toward the head simply UNSPOOLS the accordion
+    # instead of dragging a sheet that is stuck flat to the mattress, so the friction
+    # grip doesn't have to overpower the whole cover (and the robots aren't yanked over).
+    acc_fold_x = accordion_start * Wx - Wx / 2.0
+    acc_extent = (1.0 - accordion_start) * Wx
 
     pts: List[Gf.Vec3f] = []
     for j in range(ny + 1):
         for i in range(nx + 1):
             u, v = i / nx, j / ny
-            if fold and u > fold_start:
+            if accordion and u > accordion_start:
+                t = (u - accordion_start) / (1.0 - accordion_start)
+                x = acc_fold_x + t * acc_extent * accordion_gather
+                z = accordion_amp * (0.5 - 0.5 * math.cos(2.0 * math.pi * accordion_waves * t))
+            elif fold and u > fold_start:
                 # Fold the foot flap back over the top toward the head.
                 x = x_fold - (u - fold_start) * Wx
                 z = layer_dz
             else:
                 x, z = u * Wx - Wx / 2.0, 0.0
-            pts.append(Gf.Vec3f(x, v * Wy - Wy / 2.0, z))
+            pts.append(Gf.Vec3f(x + ox, (v * Wy - Wy / 2.0) + oy, z + oz))
     idx: List[int] = []
     counts: List[int] = []
 
@@ -134,7 +182,10 @@ def build_bedsheet(
     mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
     mesh.CreateFaceVertexCountsAttr(Vt.IntArray(counts))
     mesh.CreateDisplayColorAttr().Set([color])
-    UsdGeom.Xformable(mesh).AddTranslateOp().Set(Gf.Vec3d(*origin))
+    # Identity transform — the points above are already in world space. (Authoring a
+    # translate here and world-space points would double-transform the sheet under
+    # Fabric and float it off the bed.)
+    UsdGeom.Xformable(mesh).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
 
     # Particle radius. Default: neighbours just touch at rest (radius = half the
     # grid spacing) — the canonical Omniverse recipe. A `thickness` override
@@ -153,11 +204,11 @@ def build_bedsheet(
         particle_contact_offset=contact_offset,
         solid_rest_offset=rest_offset,
         fluid_rest_offset=0.0,
-        solver_position_iterations=16,
+        solver_position_iterations=solver_iterations,
         simulation_owner=Sdf.Path(scene_path),
     )
     pmat = Sdf.Path(prim_path + "_material")
-    particleUtils.add_pbd_particle_material(stage, pmat, drag=0.1, lift=0.0, friction=0.9)
+    particleUtils.add_pbd_particle_material(stage, pmat, drag=drag, lift=0.0, friction=friction)
     physicsUtils.add_physics_material_to_prim(stage, stage.GetPrimAtPath(ps_path), pmat)
 
     particleUtils.add_physx_particle_cloth(
@@ -270,8 +321,12 @@ def sync_mesh_from_view(view, mesh, idx: int = 0):
 # Fabric but **mesh updates do** — our bedsheet is a UsdGeom.Mesh, so we write its
 # deformed points straight into Fabric/usdrt each render. PhysX does NOT auto-sync
 # particle-cloth positions to Fabric, so we still read them from the tensor cloth
-# view. The cloth mesh carries ``omni:fabric:resetXformStack``, so the world-space
-# tensor positions are used directly (no transform fixup needed).
+# view. Fabric stores each prim's WORLD transform directly, so a non-identity mesh
+# xform would be applied on top of the world-space points we write — floating the
+# sheet up by the origin (the "sheet loads a few feet in the air" bug). We therefore
+# build the mesh with its points already in world space and an IDENTITY transform
+# (see build_bedsheet), so the deformed positions we blit render exactly where they
+# are — no resetXformStack or per-frame transform fixup needed.
 def make_fabric_points(prim_path: str = "/World/Sheet"):
     """Attach the Fabric/usdrt stage and return the cloth mesh's ``points``
     attribute for in-place per-frame updates (use with :func:`sync_fabric_from_view`
