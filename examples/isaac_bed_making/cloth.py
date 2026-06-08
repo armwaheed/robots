@@ -368,3 +368,154 @@ def corner_world_positions(view, sheet: "Bedsheet"):
         if vid < pts.shape[0]:
             out[label] = tuple(round(float(c), 4) for c in pts[vid])
     return out
+
+
+# ── Render-side VISUAL THICKNESS: a closed double-layer "shell" ─────────────
+# The particle cloth is a single-layer membrane (one quad grid, N particles), so
+# the renderer draws it as a zero-thickness sheet of paper — physically correct
+# for the sim, but it *looks* thin. A real made bed reads as a substantial,
+# thick cover. We give it visual body WITHOUT touching the physics: the membrane
+# stays the simulated cloth, and we drive a SEPARATE visual mesh — the same grid
+# extruded into a slab — from the same live particle positions each frame.
+#
+# Construction (static topology, points refreshed per frame):
+#   * TOP layer    = membrane + n·(h/2)   (n = per-vertex surface normal)
+#   * BOTTOM layer = membrane − n·(h/2)
+#   * SIDE WALLS   = quads stitching the top and bottom rims around the perimeter
+# so the result is a closed quad slab of thickness ``h`` that hugs the draped
+# membrane (offset along the normal, so the thickness stays uniform even where the
+# overhang folds down vertical). The membrane mesh is hidden (the slab encloses it
+# anyway); hiding it is safe — particle cloth simulates off the particle system,
+# not the mesh's render visibility, and if the sim ever *did* die the slab (built
+# FROM the live particle positions) would render flat, so the mp4 still catches it.
+@dataclass
+class ShellMesh:
+    """Handle to the visual double-layer slab that thickens a :class:`Bedsheet`."""
+
+    prim_path: str
+    mesh: object
+    nx: int
+    ny: int
+    n_particles: int   # membrane vertex count = (nx+1)*(ny+1)
+    thickness: float
+
+
+def _grid_vertex_normals(grid):
+    """Per-vertex unit normals for a draped quad grid.
+
+    ``grid`` is (ny+1, nx+1, 3) world positions (row j = +y, col i = +x). The
+    normal is cross(∂/∂i, ∂/∂j) so a flat sheet in the xy-plane yields +z; where
+    the sheet folds down over an edge the normal rotates with it, keeping the
+    extruded thickness perpendicular to the surface everywhere."""
+    import numpy as np
+
+    du = np.gradient(grid, axis=1)   # tangent along +x (columns)
+    dv = np.gradient(grid, axis=0)   # tangent along +y (rows)
+    n = np.cross(du, dv)
+    mag = np.linalg.norm(n, axis=2, keepdims=True)
+    return n / np.where(mag < 1e-9, 1.0, mag)
+
+
+def shell_points(membrane_pts, nx: int, ny: int, thickness: float):
+    """Map the N membrane particle positions to the 2N slab points.
+
+    ``membrane_pts`` is (N,3) in particle/``vid`` order (vid = j*(nx+1)+i). Returns
+    (2N,3): the TOP layer (indices 0..N-1) then the BOTTOM layer (N..2N-1), each in
+    the same vid order, offset ±thickness/2 along the per-vertex normal."""
+    import numpy as np
+
+    grid = np.asarray(membrane_pts, dtype=float).reshape(ny + 1, nx + 1, 3)
+    n = _grid_vertex_normals(grid)
+    h = thickness / 2.0
+    top = (grid + n * h).reshape(-1, 3)
+    bot = (grid - n * h).reshape(-1, 3)
+    return np.concatenate([top, bot], axis=0)
+
+
+def build_shell_mesh(
+    stage,
+    sheet: "Bedsheet",
+    *,
+    thickness: float = 0.06,
+    color: Tuple[float, float, float] = (0.86, 0.86, 0.92),
+    prim_path: str = "/World/SheetShell",
+    hide_membrane: bool = True,
+) -> ShellMesh:
+    """Create the closed double-layer visual slab for ``sheet`` and (by default)
+    hide the thin membrane. Topology is fixed; call :func:`sync_shell_fabric` (or
+    :func:`sync_shell_mesh`) each frame to push the live deformed points."""
+    nx, ny = sheet.nx, sheet.ny
+    n_part = (nx + 1) * (ny + 1)
+
+    def top(i: int, j: int) -> int:
+        return j * (nx + 1) + i
+
+    def bot(i: int, j: int) -> int:
+        return n_part + j * (nx + 1) + i
+
+    idx: List[int] = []
+    counts: List[int] = []
+    # TOP surface — same winding as the membrane (CCW from above → normal up).
+    for j in range(ny):
+        for i in range(nx):
+            idx += [top(i, j), top(i + 1, j), top(i + 1, j + 1), top(i, j + 1)]
+            counts.append(4)
+    # BOTTOM surface — reversed winding so its normal points down.
+    for j in range(ny):
+        for i in range(nx):
+            idx += [bot(i, j), bot(i, j + 1), bot(i + 1, j + 1), bot(i + 1, j)]
+            counts.append(4)
+    # PERIMETER side walls — march the boundary loop CCW (viewed from +z) and
+    # stitch each top edge to the matching bottom edge.
+    perim: List[Tuple[int, int]] = (
+        [(i, 0) for i in range(nx + 1)]          # foot edge, +x
+        + [(nx, j) for j in range(1, ny + 1)]    # right edge, +y
+        + [(i, ny) for i in range(nx - 1, -1, -1)]  # head edge, −x
+        + [(0, j) for j in range(ny - 1, 0, -1)]    # left edge, −y
+    )
+    for (ia, ja), (ib, jb) in zip(perim, perim[1:] + perim[:1]):
+        idx += [top(ia, ja), top(ib, jb), bot(ib, jb), bot(ia, ja)]
+        counts.append(4)
+
+    mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    mesh.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0.0, 0.0, 0.0)] * (2 * n_part)))
+    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
+    mesh.CreateFaceVertexCountsAttr(Vt.IntArray(counts))
+    mesh.CreateDisplayColorAttr().Set([color])
+    # doubleSided so the slab is opaque from every angle regardless of winding;
+    # subdivision "none" so the renderer draws the actual extruded quads (a crisp
+    # cover) rather than Catmull-Clark-rounding the slab into a pillow.
+    mesh.CreateDoubleSidedAttr(True)
+    mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+    # Identity transform + world-space points (same contract as the membrane mesh:
+    # under Fabric a non-identity xform double-transforms the world points).
+    UsdGeom.Xformable(mesh).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+    if hide_membrane:
+        UsdGeom.Imageable(sheet.mesh).MakeInvisible()
+
+    return ShellMesh(prim_path, mesh, nx, ny, n_part, thickness)
+
+
+def sync_shell_fabric(view, fabric_points, shell: ShellMesh, idx: int = 0):
+    """Blit the live deformed slab points into the shell's Fabric ``points`` (for
+    ``use_fabric=True``). ``fabric_points`` comes from :func:`make_fabric_points`
+    on the shell prim. Returns the (N,3) membrane positions."""
+    import numpy as np
+    import usdrt
+
+    p = view_positions(view, idx)
+    sp = shell_points(p, shell.nx, shell.ny, shell.thickness)
+    fabric_points.Set(usdrt.Vt.Vec3fArray(np.ascontiguousarray(sp, dtype=np.float32)))
+    return p
+
+
+def sync_shell_mesh(view, shell: ShellMesh, idx: int = 0):
+    """USD-path equivalent of :func:`sync_shell_fabric` (for ``use_fabric=False``)."""
+    import numpy as np
+    from pxr import Vt
+
+    p = view_positions(view, idx)
+    sp = shell_points(p, shell.nx, shell.ny, shell.thickness)
+    shell.mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(sp.astype(np.float32)))
+    return p

@@ -171,7 +171,12 @@ def main() -> int:
         size=scenemod.SHEET_SIZE, resolution=scenemod.SHEET_RES,
         origin=scenemod.SHEET_ORIGIN, color=(0.86, 0.86, 0.92),
         thickness=scenemod.SHEET_THICKNESS, accordion=True)
-    mark("bedsheet built (flat head edge + accordion ruffle at the foot)")
+    # Give the sheet VISUAL THICKNESS: the particle cloth is a single-layer membrane
+    # (renders thin), so we drive a separate closed double-layer slab from the same
+    # live particle positions each frame and hide the membrane (physics unchanged).
+    shell = clothmod.build_shell_mesh(
+        stage, sheet, thickness=scenemod.SHEET_SHELL_THICKNESS, color=(0.86, 0.86, 0.92))
+    mark("bedsheet built (flat head edge + accordion ruffle at the foot; thick visual shell)")
 
     # ── manipulation: TWO-handed Pink IK + finger grips (or optional dataset replay) ──
     # Each G1 drives both arms (the right also owns the 3-DOF waist so it leans into the
@@ -227,7 +232,9 @@ def main() -> int:
         if cam is None:
             return
         if cloth_view is not None and fabric_points is not None:
-            clothmod.sync_fabric_from_view(cloth_view, fabric_points)
+            # Drive the thick visual slab from the live particle positions (the thin
+            # membrane it replaces is hidden). fabric_points is the SHELL's points.
+            clothmod.sync_shell_fabric(cloth_view, fabric_points, shell)
         sim.render()  # updates the live GUI viewport too, when --gui
         cam.update(dt=sim_dt)
         if not ARGS.render:
@@ -266,7 +273,9 @@ def main() -> int:
     # the Fabric points handle we blit the deformation into each render.
     step(1)
     cloth_view = clothmod.make_cloth_view("/World/Sheet")
-    fabric_points = clothmod.make_fabric_points("/World/Sheet")
+    # Blit into the SHELL's Fabric points (the visible thick slab), not the hidden
+    # membrane. Positions still come from the membrane's tensor cloth view.
+    fabric_points = clothmod.make_fabric_points(shell.prim_path)
     if fabric_points is None:
         print("[demo] WARNING: cloth not in Fabric — sheet deformation may not render", flush=True)
 

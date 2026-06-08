@@ -99,7 +99,12 @@ SHEET_SIZE = (1.3, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26)
 # RENDER is still a single-layer membrane (looks thin) — giving it visual thickness
 # needs a render-side shell (extrude / double-layer the mesh). That is the next task.
 SHEET_RES = (14, 12)                            # coarse like MuJoCo's 13×11 → stable drape
-SHEET_THICKNESS = 0.05                          # thick physics/collision (visual shell TODO)
+SHEET_THICKNESS = 0.05                          # thick physics/collision profile
+# Visual thickness: the particle cloth is a single-layer membrane (renders thin), so
+# cloth.build_shell_mesh extrudes a closed double-layer SLAB of this depth along the
+# surface normal each frame — purely render-side, physics unchanged. 0.07 m reads as a
+# substantial folded cover (validated in isolation 2026-06-08, .isaac/shell_tune).
+SHEET_SHELL_THICKNESS = 0.07
 # Centre placed so the flat head edge sits at ~x=+0.05 (right where the robots stand,
 # head half of the bed bare) and the pleated ruffle gathers over the foot half. Rests
 # just above the mattress top so it settles onto it (not floating in the air).
