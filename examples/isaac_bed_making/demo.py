@@ -145,6 +145,16 @@ def main() -> int:
     mark("calling sim.reset()")
     sim.reset()
     stage = omni.usd.get_context().get_stage()
+    # Round the pillows: hide the square box visuals and draw a rounded superellipsoid
+    # pillow in each one's place (the box stays as a hidden, rounded collider so the
+    # cloth still drapes over it). Visual-only meshes, so post-reset authoring is fine.
+    from pxr import UsdGeom  # noqa: E402
+    from examples.isaac_bed_making import props as propsmod  # noqa: E402
+    for side, path in (("left", "/World/PillowL"), ("right", "/World/PillowR")):
+        UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
+        propsmod.superellipsoid_mesh(stage, f"/World/PillowVis_{side}",
+                                     size=scenemod.PILLOW_SIZE, center=scenemod.PILLOWS[side],
+                                     color=(0.95, 0.95, 0.97), roundness=scenemod.PILLOW_ROUNDNESS)
     robots = [scene["robot_0"], scene["robot_1"]]
     sim_dt = sim.get_physics_dt()
     if cam is not None:

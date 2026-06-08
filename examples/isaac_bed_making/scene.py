@@ -44,8 +44,14 @@ COLLIDER_CONTACT_OFFSET = 0.035
 
 # ── Headboard + pillows (static props at the head) ──────────────────────────
 HEADBOARD_SIZE = (0.12, 1.9, 0.95)
-HEADBOARD_CENTER = (HEAD_X - 0.06, 0.0, 0.55)  # just behind the head, rises to ~1.0
+# Centred so the headboard front face OVERLAPS the mattress head by ~6 cm (front at
+# x=-0.94 vs bed back at -1.0) — it sits flush against the bed, no gap. (Was HEAD_X-0.06,
+# which left a visible gap.) It also gets a rounded collider (static_box rounded=True).
+HEADBOARD_CENTER = (HEAD_X, 0.0, 0.55)  # touches the bed, rises to ~1.0
 PILLOW_SIZE = (0.5, 0.72, 0.16)
+# Pillows render as rounded superellipsoid meshes (props.superellipsoid_mesh built in
+# demo.py), not square boxes; 1.0 = ellipsoid, ~0.2 = barely rounded. Box collider stays.
+PILLOW_ROUNDNESS = 0.35
 PILLOWS = {
     "left": (HEAD_X + 0.42, -0.43, BED_TOP_Z + PILLOW_SIZE[2] / 2.0),
     "right": (HEAD_X + 0.42, 0.43, BED_TOP_Z + PILLOW_SIZE[2] / 2.0),
@@ -205,7 +211,7 @@ def build_scene_cfg(g1_cfg):
         # too slick and the foot-draped cover slides off on its own — 0.4 holds it.)
         bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=0.4, rounded=True).replace(
             prim_path="/World/Bed")
-        headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17)).replace(
+        headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17), rounded=True).replace(
             prim_path="/World/Headboard")
         # Pillows are rounded colliders so the cover drapes OVER their tops (functional
         # pillows) instead of passing through them.
