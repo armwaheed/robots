@@ -398,6 +398,15 @@ class ShellMesh:
     ny: int
     n_particles: int   # membrane vertex count = (nx+1)*(ny+1)
     thickness: float
+    # How the slab straddles the membrane along the surface normal, in [0,1]:
+    #   0.0 = centred (±h/2)   1.0 = fully OUTWARD (membrane is the inner face, slab
+    # extends +h along +normal). Outward is the default: centred buries the bottom
+    # layer h/2 BELOW the membrane, and since the membrane rests on the mattress the
+    # buried half sits inside the mattress — the sharp mattress top edge then pokes
+    # up through the slab (the "mattress edge clips the sheet" artifact). Extruding
+    # outward keeps the whole slab on the away-from-bed side of the cloth, so the
+    # mattress can never intersect it.
+    bias: float = 1.0
 
 
 def _grid_vertex_normals(grid):
@@ -416,19 +425,22 @@ def _grid_vertex_normals(grid):
     return n / np.where(mag < 1e-9, 1.0, mag)
 
 
-def shell_points(membrane_pts, nx: int, ny: int, thickness: float):
+def shell_points(membrane_pts, nx: int, ny: int, thickness: float, bias: float = 1.0):
     """Map the N membrane particle positions to the 2N slab points.
 
     ``membrane_pts`` is (N,3) in particle/``vid`` order (vid = j*(nx+1)+i). Returns
-    (2N,3): the TOP layer (indices 0..N-1) then the BOTTOM layer (N..2N-1), each in
-    the same vid order, offset ±thickness/2 along the per-vertex normal."""
+    (2N,3): the TOP (outer) layer (indices 0..N-1) then the BOTTOM (inner) layer
+    (N..2N-1), each in the same vid order. ``bias`` slides the slab along the normal:
+    1.0 = fully outward (inner face = membrane), 0.0 = centred (±h/2). See
+    :class:`ShellMesh` for why outward avoids the mattress-edge clip."""
     import numpy as np
 
     grid = np.asarray(membrane_pts, dtype=float).reshape(ny + 1, nx + 1, 3)
     n = _grid_vertex_normals(grid)
-    h = thickness / 2.0
-    top = (grid + n * h).reshape(-1, 3)
-    bot = (grid - n * h).reshape(-1, 3)
+    hi = thickness * (0.5 + 0.5 * bias)        # outer offset: 0.5h..h
+    lo = -thickness * 0.5 * (1.0 - bias)       # inner offset: -0.5h..0
+    top = (grid + n * hi).reshape(-1, 3)
+    bot = (grid + n * lo).reshape(-1, 3)
     return np.concatenate([top, bot], axis=0)
 
 
@@ -437,6 +449,7 @@ def build_shell_mesh(
     sheet: "Bedsheet",
     *,
     thickness: float = 0.06,
+    bias: float = 1.0,
     color: Tuple[float, float, float] = (0.86, 0.86, 0.92),
     prim_path: str = "/World/SheetShell",
     hide_membrane: bool = True,
@@ -494,7 +507,7 @@ def build_shell_mesh(
     if hide_membrane:
         UsdGeom.Imageable(sheet.mesh).MakeInvisible()
 
-    return ShellMesh(prim_path, mesh, nx, ny, n_part, thickness)
+    return ShellMesh(prim_path, mesh, nx, ny, n_part, thickness, bias)
 
 
 def sync_shell_fabric(view, fabric_points, shell: ShellMesh, idx: int = 0):
@@ -505,7 +518,7 @@ def sync_shell_fabric(view, fabric_points, shell: ShellMesh, idx: int = 0):
     import usdrt
 
     p = view_positions(view, idx)
-    sp = shell_points(p, shell.nx, shell.ny, shell.thickness)
+    sp = shell_points(p, shell.nx, shell.ny, shell.thickness, shell.bias)
     fabric_points.Set(usdrt.Vt.Vec3fArray(np.ascontiguousarray(sp, dtype=np.float32)))
     return p
 
@@ -516,6 +529,6 @@ def sync_shell_mesh(view, shell: ShellMesh, idx: int = 0):
     from pxr import Vt
 
     p = view_positions(view, idx)
-    sp = shell_points(p, shell.nx, shell.ny, shell.thickness)
+    sp = shell_points(p, shell.nx, shell.ny, shell.thickness, shell.bias)
     shell.mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(sp.astype(np.float32)))
     return p

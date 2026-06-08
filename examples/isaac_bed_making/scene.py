@@ -34,6 +34,14 @@ SIDE_Y = BED_SIZE[1] / 2.0   # 0.9
 
 OVERHANG = 0.2286  # 9 inches: how far the made sheet hangs past each side + foot
 
+# Collision rounding for the cloth-facing props (bed + pillows). A rest offset inflates
+# and rounds the collider's sharp corners and leaves a small air gap; the contact offset
+# (must be > rest) widens the band where contacts are generated so the cloth catches the
+# collider early instead of tunnelling. This is the "round the mattress corners" fix done
+# at the collision level — see scene.static_box and .isaac/fix_tune.py.
+COLLIDER_REST_OFFSET = 0.015
+COLLIDER_CONTACT_OFFSET = 0.035
+
 # ── Headboard + pillows (static props at the head) ──────────────────────────
 HEADBOARD_SIZE = (0.12, 1.9, 0.95)
 HEADBOARD_CENTER = (HEAD_X - 0.06, 0.0, 0.55)  # just behind the head, rises to ~1.0
@@ -162,11 +170,20 @@ def build_scene_cfg(g1_cfg):
         )
         return g.replace(prim_path=f"/World/envs/env_0/Robot_{idx}")
 
-    def static_box(size, center, color, friction=1.0):
+    def static_box(size, center, color, friction=1.0, rounded=False):
+        # A rest/contact offset INFLATES + ROUNDS the collision corners and leaves a
+        # small air gap, so the particle cloth drapes over a rounded edge instead of
+        # catching on a sharp 90° corner (which pokes through the sheet — the "mattress
+        # edge clips the bedsheet" bug) and so it reliably catches thin colliders like
+        # the pillows instead of tunnelling through them. PhysX requires contact > rest.
+        # (NVIDIA forums: tune contact/rest offset on both the cloth and the colliders.)
+        cp = (sim_utils.CollisionPropertiesCfg(
+                  contact_offset=COLLIDER_CONTACT_OFFSET, rest_offset=COLLIDER_REST_OFFSET)
+              if rounded else sim_utils.CollisionPropertiesCfg())
         return AssetBaseCfg(
             spawn=sim_utils.CuboidCfg(
                 size=size,
-                collision_props=sim_utils.CollisionPropertiesCfg(),
+                collision_props=cp,
                 physics_material=sim_utils.RigidBodyMaterialCfg(
                     static_friction=friction, dynamic_friction=friction, restitution=0.0),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
@@ -186,13 +203,15 @@ def build_scene_cfg(g1_cfg):
         # hand's friction grip and tears the cover out of it (the cover "slips"). With a
         # slick mattress the cover slides headward under even a marginal grip. (Trade-off:
         # too slick and the foot-draped cover slides off on its own — 0.4 holds it.)
-        bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=0.4).replace(
+        bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=0.4, rounded=True).replace(
             prim_path="/World/Bed")
         headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17)).replace(
             prim_path="/World/Headboard")
-        pillow_l = static_box(PILLOW_SIZE, PILLOWS["left"], (0.93, 0.93, 0.96)).replace(
+        # Pillows are rounded colliders so the cover drapes OVER their tops (functional
+        # pillows) instead of passing through them.
+        pillow_l = static_box(PILLOW_SIZE, PILLOWS["left"], (0.93, 0.93, 0.96), rounded=True).replace(
             prim_path="/World/PillowL")
-        pillow_r = static_box(PILLOW_SIZE, PILLOWS["right"], (0.93, 0.93, 0.96)).replace(
+        pillow_r = static_box(PILLOW_SIZE, PILLOWS["right"], (0.93, 0.93, 0.96), rounded=True).replace(
             prim_path="/World/PillowR")
         robot_0 = walker(0)
         robot_1 = walker(1)
