@@ -21,3 +21,8 @@ artifacts/unitree_g1_demo/frame_*.png
 artifacts/unitree_g1_demo/summary.txt
 artifacts/isaac_bed_making/frame_*.png
 artifacts/isaac_bed_making/isaac_bed_making.mp4
+
+# RL training artifacts (regenerable; large)
+examples/isaac_bed_making/rl/logs/
+examples/isaac_bed_making/rl/eval/
+examples/isaac_bed_making/rl/**/__pycache__/
