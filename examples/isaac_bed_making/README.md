@@ -20,41 +20,45 @@ A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](media/isa
 
 ## What it shows
 
-* **Learned locomotion walk‑in.** Each G1 starts ~0.85 m off its side of the bed
-  and **walks in on a learned RL policy** — Unitree's open
-  [`unitree_rl_gym`](https://github.com/unitreerobotics/unitree_rl_gym) G1 flat‑walk
-  policy (LSTM + gait clock), driven with its exact 47‑dim observation and leg PD
-  gains. Two G1s stride to the bedside, alternating legs, upright.
-* **Established G1 manipulation IK (NVIDIA Pink/Pinocchio).** At the bedside each
-  robot makes the bed with **Isaac Lab's `pink_ik` controller** — a weighted‑QP IK
-  over the **arm *and* the 3‑DOF waist**, so the torso **leans into** the low reach
-  the way a person bends to make a bed.
-* **Real, physically‑simulated cloth.** A PhysX particle‑cloth sheet drapes over the
-  bed under gravity and is gripped by the robots' hands — not a scripted animation.
-* **Friction grasping, no cheating.** The hands have a high‑friction "rubberized"
-  material; the cloth is gripped by **contact friction**, with no kinematic grasp.
-* **Equal‑peer swarm coordination over Device Connect.** Both G1s pursue the goal
-  state *"the bed is made"*; they claim work, emit events, and ask for / offer help.
-  With `--broker` both peers register live on the Device Connect dashboard.
-* **Optional: real motion from teleoperation data** (`--replay`) — see below.
+* **Official, sim‑to‑real locomotion walk‑in.** Each G1 starts ~1.6 m off its side of
+  the bed and **walks in on Unitree's official
+  [`unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab) G1 velocity‑walk
+  policy** — a pretrained, Isaac‑Lab‑native whole‑body RL policy that Unitree ships to
+  deploy on real G1s. We reproduce its exact 480‑dim observation, joint order and PD gains
+  from the policy's own deploy config, and run the MLP **on the GPU via torch** (the DGX
+  Spark has no onnxruntime GPU provider). Two G1s stride to the bedside, upright.
+* **Free‑standing balance — no kinematic cheats.** This is the heart of the example: the
+  robots are **free‑base articulations** that stand, walk and reach **entirely under their
+  controllers**. There is **no base pinning, no teleporting, no joint freezing** — every
+  motion is one a real G1 could reproduce on hardware. At the bedside the velocity policy
+  keeps **balancing the legs in place** while the arms work.
+* **Established G1 manipulation IK (NVIDIA Pink/Pinocchio).** Each robot reaches with
+  **Isaac Lab's `pink_ik` controller** — a weighted‑QP IK over the **arm *and* the 3‑DOF
+  waist** — while the policy balances underneath.
+* **Real, physically‑simulated cloth.** A PhysX particle‑cloth sheet drapes over the bed
+  under gravity (the "MuJoCo recipe": featherlight + coarse + thick) with a render‑side
+  shell for visual thickness — not a scripted animation.
+* **Equal‑peer swarm coordination over Device Connect.** Both G1s pursue the goal state
+  *"the bed is made"*; they claim work, emit events, and ask for / offer help. With
+  `--broker` both peers register live on the Device Connect dashboard.
 
-## Two RL policies, each for what it's good at
+## Status — physically valid, with one known gap
 
-The walk and the bedside stance want different things from the legs, so the demo
-uses two policies:
+The whole point of an Isaac Sim demo is **sim‑to‑real**: every motion must be something a
+real robot could do. So this example refuses kinematic shortcuts. What that buys, and what
+it costs, today:
 
-* **Walk‑in** — Unitree's `unitree_rl_gym` G1 policy strides across the floor.
-* **Bedside stance** — Isaac Lab's pretrained **agile** locomotion policy actively
-  balances each robot in place while it settles. (The walk policy is a gait‑clock
-  walker: at zero command it keeps marching and drifts, so it travels but does not
-  hold a manipulation stance.)
-
-Then, for the manipulation itself, the **pelvis is held** at its arrived pose. This
-is deliberate and matches NVIDIA's own approach: a free‑floating humanoid cannot
-balance through a bend‑over‑the‑bed reach with the publicly available policies, so
-Isaac Lab ships a **fixed‑base** G1 manipulation env
-(`FixedBaseUpperBodyIKG1EnvCfg`) for exactly this. The robot does the real learned
-walk‑in floating, then plants firmly and the Pink IK arm + waist do the bed‑making.
+* ✅ **Walk‑in works** — the official velocity policy stands and strides on its own (GPU).
+* ✅ **Free‑standing bedside balance works** — pelvis steady ~0.79 m, feet planted, the
+  policy balancing the legs with nothing held.
+* ⚠️ **Sustained bed‑making reach is WIP.** A deep bend‑over‑the‑bed reach shifts the
+  centre of mass past what a *walking*‑balance policy can hold, so the robots topple on the
+  deep reach (they take recovery steps backward and fall). A free‑standing humanoid needs
+  **whole‑body loco‑manipulation** to manipulate without falling — coordinating the reach
+  with the torso/legs. The roadmap: (1) a **push/drag‑while‑walking** strategy ("Toil
+  Mode") that uses the policy's *walking* strength to move the sheet, then (2) a **trained
+  loco‑manipulation RL policy** for the full motion. We deliberately do **not** pin or
+  fix the base to hide this — that would make the sim a cartoon and break sim‑to‑real.
 
 ## Adapting NVIDIA's Pink IK to the Inspire hand
 

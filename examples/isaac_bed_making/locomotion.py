@@ -33,6 +33,53 @@ from typing import Optional
 
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
+# ── unitree_rl_lab G1 velocity-walk policy (Unitree official, Isaac-Lab-native) ──
+# Unitree's official Isaac-Lab training repo (github.com/unitreerobotics/unitree_rl_lab)
+# ships a *pretrained, exported* G1-29DOF velocity-tracking walk policy. It is a plain
+# 4-layer MLP actor (obs 480 → 512 → 256 → 128 → 29, ELU), trained in Isaac Lab on the
+# SAME G1 articulation we use here, so its observation/action joint order is exactly our
+# robot's Isaac articulation order — no SDK remap needed in sim.
+#
+# We run it through **torch on the GPU** (cuda) rather than onnxruntime: the DGX Spark
+# (aarch64 / GB10, sm_121) has no onnxruntime CUDA execution provider available, and the
+# project rule is to never run inference on the CPU. The ONNX is a pure MLP, so we lift
+# its Gemm weights straight into ``torch.nn.Linear`` layers on the GPU (see VelocityWalker).
+#
+# Spec is taken verbatim from the policy's own C++ deploy runtime + deploy.yaml
+# (policies/g1_velocity_walk.deploy.yaml):
+#   obs = concat over terms of each term's 5-step history (oldest→newest), terms in order
+#         base_ang_vel·0.2 (3), projected_gravity (3), velocity_commands (3),
+#         joint_pos_rel·1.0 (29), joint_vel_rel·0.05 (29), last_action·1.0 (29)
+#       = (3+3+3+29+29+29)·5 = 480
+#   action = raw·0.25 + default_joint_pos        (all 29 joints, Isaac order)
+#   command = [vx, vy, wz], ranges vx[-0.5,1.0] vy[-0.3,0.3] wz[-0.2,0.2]; step_dt 0.02 (50 Hz)
+VEL_ONNX_PATH = str(Path(__file__).with_name("policies") / "g1_velocity_walk.onnx")
+# The 29 body joints in the policy's (Isaac articulation) order — the first 29 joints of
+# the Inspire-hand G1 (verified against deploy.yaml default_joint_pos).
+VEL_JOINT_NAMES = [
+    "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
+    "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint",
+    "left_hip_yaw_joint", "right_hip_yaw_joint", "waist_pitch_joint",
+    "left_knee_joint", "right_knee_joint",
+    "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+    "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+    "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+    "left_ankle_roll_joint", "right_ankle_roll_joint",
+    "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+    "left_elbow_joint", "right_elbow_joint",
+    "left_wrist_roll_joint", "right_wrist_roll_joint",
+    "left_wrist_pitch_joint", "right_wrist_pitch_joint",
+    "left_wrist_yaw_joint", "right_wrist_yaw_joint",
+]
+VEL_DEFAULT_POS = [-0.1, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.3, 0.3, 0.3,
+                   -0.2, -0.2, 0.25, -0.25, 0.0, 0.0, 0.0, 0.0, 0.97, 0.97, 0.15, -0.15,
+                   0.0, 0.0, 0.0, 0.0]
+VEL_ANG_VEL_SCALE = 0.2
+VEL_DOF_VEL_SCALE = 0.05
+VEL_ACTION_SCALE = 0.25
+VEL_HISTORY = 5
+VEL_CMD_RANGES = ((-0.5, 1.0), (-0.3, 0.3), (-0.2, 0.2))  # vx, vy, wz
+
 # ── unitree_rl_gym G1 flat-walk policy (open/public, BSD-3) ──────────────────
 # The Isaac Lab agile policy above is a tabletop-balance *teacher* — it holds a
 # stand but never strides. Unitree's open ``unitree_rl_gym`` ships a real G1
@@ -267,4 +314,145 @@ class RLGymWalker:
 
     def stand(self):
         """A pure standing command (zero velocity; the gait clock still ticks)."""
+        return [0.0, 0.0, 0.0]
+
+
+def _load_onnx_mlp_to_torch(onnx_path: str, device: str):
+    """Lift an exported MLP-actor ONNX (Gemm/ELU stack) into a torch ``Sequential`` on
+    ``device`` (the GPU). The Spark has no onnxruntime GPU execution provider, so we run
+    the policy through torch.cuda instead of onnxruntime — the project rule is no CPU
+    inference. Weights map 1:1: ONNX Gemm ``transB=1`` stores weight as (out, in), exactly
+    ``torch.nn.Linear`` layout."""
+    import onnx
+    import torch
+    from onnx import numpy_helper
+
+    init = {w.name: numpy_helper.to_array(w) for w in onnx.load(onnx_path).graph.initializer}
+    pairs = [("actor.0.weight", "actor.0.bias"), ("actor.2.weight", "actor.2.bias"),
+             ("actor.4.weight", "actor.4.bias"), ("actor.6.weight", "actor.6.bias")]
+    layers = []
+    for k, (wn, bn) in enumerate(pairs):
+        W = torch.tensor(init[wn], dtype=torch.float32, device=device)  # (out, in)
+        b = torch.tensor(init[bn], dtype=torch.float32, device=device)
+        lin = torch.nn.Linear(W.shape[1], W.shape[0]).to(device)
+        with torch.no_grad():
+            lin.weight.copy_(W)
+            lin.bias.copy_(b)
+        layers.append(lin)
+        if k < len(pairs) - 1:
+            layers.append(torch.nn.ELU(alpha=1.0))
+    return torch.nn.Sequential(*layers).to(device).eval()
+
+
+class VelocityWalker:
+    """Drives one G1 with Unitree's **official** ``unitree_rl_lab`` velocity-walk policy.
+
+    A whole-body (29-joint) velocity-tracking policy: at a non-zero command it strides to
+    track ``[vx, vy, wz]``; at zero command it balances in place (so the same instance
+    serves the settle-stand AND the approach-walk). The MLP runs on the GPU via torch (no
+    onnxruntime — see :func:`_load_onnx_mlp_to_torch`). The 480-dim observation, the
+    5-step term-major history, the ``·0.25 + default`` action map and the Isaac joint order
+    are all reproduced from the policy's own deploy runtime (see VEL_* constants).
+
+    Drop-in call surface matching the other walkers: ``act(cmd)`` / ``command_to`` /
+    ``stand`` / ``base_xy`` / ``leg_ids`` — except ``cmd`` is ``[vx, vy, wz]`` (3-dim)."""
+
+    def __init__(self, robot, device: str, control_dt: float, onnx_path: Optional[str] = None):
+        import torch
+
+        self._torch = torch
+        self.robot = robot
+        self.device = device
+        self.control_dt = control_dt
+        self.policy = _load_onnx_mlp_to_torch(onnx_path or VEL_ONNX_PATH, device)
+        # 29 body joints in the policy's (Isaac articulation) order.
+        self.joint_ids, _ = robot.find_joints(VEL_JOINT_NAMES, preserve_order=True)
+        self.leg_ids, _ = robot.find_joints(LEG_RE)
+        # Positions within the 29-vector that are leg joints (for legs-only balance mode),
+        # and the matching articulation ids in that same order.
+        legset = set(int(j) for j in self.leg_ids)
+        self._leg_cols = [k for k, j in enumerate(self.joint_ids) if int(j) in legset]
+        self._leg_apply_ids = [int(self.joint_ids[k]) for k in self._leg_cols]
+        self.default = torch.tensor(VEL_DEFAULT_POS, device=device)        # (29,) Isaac order
+        self.ang_scale = VEL_ANG_VEL_SCALE
+        self.dof_vel_scale = VEL_DOF_VEL_SCALE
+        self.last_action = torch.zeros(29, device=device)                  # raw policy output
+        self._hist = None  # list[6] of deques(maxlen=5), oldest at index 0
+
+    def reset(self) -> None:
+        self.last_action = self._torch.zeros(29, device=self.device)
+        self._hist = None
+
+    def default_pose(self):
+        """The policy's default 29-joint pose (Isaac order) + the joint ids to write it to —
+        used to set the robot into the walking stance before the policy takes over."""
+        return self.default.unsqueeze(0), self.joint_ids
+
+    def _terms(self, cmd):
+        torch = self._torch
+        d = self.robot.data
+        ang = d.root_ang_vel_b[0] * self.ang_scale                         # (3)
+        grav = d.projected_gravity_b[0]                                     # (3)
+        cmd_t = torch.tensor(cmd, device=self.device, dtype=torch.float32)  # (3)
+        q = d.joint_pos[0, self.joint_ids]
+        jpos = q - self.default                                            # (29)
+        jvel = d.joint_vel[0, self.joint_ids] * self.dof_vel_scale          # (29)
+        return [ang, grav, cmd_t, jpos, jvel, self.last_action]            # 6 terms
+
+    def act(self, cmd, legs_only: bool = False) -> None:
+        """Run the policy for command ``[vx, vy, wz]`` and set joint targets. Call once per
+        control step (~50 Hz). With ``legs_only=True`` only the 12 LEG targets are applied —
+        the policy keeps balancing the legs while another controller (Pink IK) owns the arms
+        + waist for manipulation. The policy still OBSERVES the true whole-body state, so its
+        leg balance accounts for wherever the arms reach."""
+        from collections import deque
+
+        torch = self._torch
+        terms = self._terms(cmd)
+        if self._hist is None:  # fill the 5-step history with the first observation
+            self._hist = [deque([t.clone() for _ in range(VEL_HISTORY)], maxlen=VEL_HISTORY)
+                          for t in terms]
+        else:
+            for k, t in enumerate(terms):
+                self._hist[k].append(t)
+        # term-major: for each term, its history oldest→newest, then concatenate terms.
+        obs = torch.cat([h for term_hist in self._hist for h in term_hist]).unsqueeze(0)
+        raw = self.policy(obs.float()).detach()[0]                         # (29,)
+        self.last_action = raw
+        tgt = raw * VEL_ACTION_SCALE + self.default                        # (29,)
+        if legs_only:
+            self.robot.set_joint_position_target(
+                tgt[self._leg_cols].unsqueeze(0), joint_ids=self._leg_apply_ids)
+        else:
+            self.robot.set_joint_position_target(tgt.unsqueeze(0), joint_ids=self.joint_ids)
+
+    # ── helpers (mirror the other walkers) ──────────────────────────────────────
+    def _base_yaw(self) -> float:
+        q = self.robot.data.root_quat_w[0]  # (w, x, y, z)
+        w, x, y, z = (float(v) for v in q.tolist())
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    def base_xy(self):
+        p = self.robot.data.root_pos_w[0, :2]
+        return float(p[0]), float(p[1])
+
+    def command_to(self, target_xy, *, stop_radius: float = 0.15,
+                   max_vx: float = 0.6, turn_gain: float = 1.5):
+        """Velocity command ``[vx, vy, wz]`` that walks the base toward ``target_xy``
+        (world), clamped to the policy's trained command ranges. Returns ``(cmd, arrived)``."""
+        px, py = self.base_xy()
+        dx, dy = target_xy[0] - px, target_xy[1] - py
+        dist = math.hypot(dx, dy)
+        if dist < stop_radius:
+            return [0.0, 0.0, 0.0], True
+        yaw = self._base_yaw()
+        heading = math.atan2(dy, dx)
+        yaw_err = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+        (vxlo, vxhi), _, (wzlo, wzhi) = VEL_CMD_RANGES
+        vx = min(vxhi, max(vxlo, max_vx * max(0.0, math.cos(yaw_err)) * min(1.0, dist / 0.5)))
+        wz = min(wzhi, max(wzlo, turn_gain * yaw_err))
+        return [vx, 0.0, wz], False
+
+    def stand(self):
+        """A pure standing command (zero velocity → balance in place)."""
         return [0.0, 0.0, 0.0]

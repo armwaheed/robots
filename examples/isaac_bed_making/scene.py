@@ -61,11 +61,14 @@ PILLOWS = {
 # (pos, yaw_deg). yaw about Z: +90 faces +y, -90 faces -y. They stand near the
 # middle of each long side so they can grab the sheet's head-side corners (gathered
 # just foot-of-centre) and pull them toward the head.
-ROBOT_Z = 0.75
+ROBOT_Z = 0.80      # spawn pelvis height: the velocity-walk policy's natural standing
+                    # height (feet just touch the floor). 0.75 punched the feet ~4 cm
+                    # through the floor at spawn and the policy couldn't recover.
 STAND_PELVIS_Z = 0.80  # clean upright standing pelvis height for manipulation (feet on floor)
 MANIP_X = 0.05      # flank the bed near mid-side, within reach of the head-side corners
-APPROACH_Y = 1.85   # spawn here (~0.5 m off the y=+/-0.9 side, plus body width)
-MANIP_Y = 1.00      # walk-in target (they converge ~0.1 m short, ~1.12, just off the bed side)
+APPROACH_Y = 2.60   # spawn here, ~1.6 m out from the bedside mark, so the G1s actually
+                    # WALK in under the policy (not teleport). ~0.9 m off the y=+/-0.9 bed side.
+MANIP_Y = 1.05      # walk-in target at the bedside (just off the y=+/-0.9 bed side)
 ROBOTS = {
     0: {"approach": (MANIP_X, -APPROACH_Y, ROBOT_Z), "manip": (MANIP_X, -MANIP_Y),
         "yaw_deg": 90.0, "side": "-y"},
@@ -136,10 +139,14 @@ def yaw_to_quat(yaw_deg: float) -> Tuple[float, float, float, float]:
     return (math.cos(h), 0.0, 0.0, math.sin(h))
 
 
-def build_scene_cfg(g1_cfg):
+def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
     """Return an InteractiveSceneCfg subclass: two floating (walk-capable) G1s +
     bed + headboard + pillows. The G1s spawn at their approach positions with
-    gravity on and a free base so the locomotion policy can walk them in."""
+    gravity on and a free base so the locomotion policy can walk them in.
+
+    ``spawn_at_manip`` spawns the G1s directly at their bedside marks instead of the
+    approach positions (the ``--no-walk`` debug shortcut) — a legitimate start pose, not
+    a mid-sim teleport."""
     import isaaclab.sim as sim_utils
     from isaaclab.actuators import ImplicitActuatorCfg
     from isaaclab.assets import AssetBaseCfg
@@ -153,24 +160,40 @@ def build_scene_cfg(g1_cfg):
         # baked root_joint before reset — see locomotion.make_floating_base).
         g.spawn.rigid_props.disable_gravity = False
         g.spawn.articulation_props.fix_root_link = False
-        # The rl_gym walk policy was trained with specific leg PD gains; set them on
-        # the Isaac actuators or the policy's targets are tracked wrong and it falls.
-        # Replacing the "legs"/"feet" groups (hips+knee / ankles) leaves waist + arms
-        # + hands untouched. (kp/kd from policies/g1_rlgym_walk.yaml.)
+        # The velocity-walk policy is a WHOLE-BODY controller trained with specific PD
+        # gains on ALL 29 joints (its deploy.yaml). The stock G1_29DOF/Inspire config is
+        # far stiffer for manipulation (waist kp 5000, arms kp 3000) — fed those gains the
+        # locomotion policy can't balance and collapses (NVIDIA forums: gain
+        # misconfiguration → falling). So set the EXACT trained gains on legs, feet, waist
+        # and arms (from policies/g1_velocity_walk.deploy.yaml); only the Inspire "hands"
+        # group is left as-is. (demo.py re-stiffens waist+arms at the plant for the firm
+        # manipulation lean — see run_bedmaking; the legs are kinematically frozen by then.)
         g.actuators = dict(g.actuators)
         g.actuators["legs"] = ImplicitActuatorCfg(
             joint_names_expr=[".*_hip_pitch_joint", ".*_hip_roll_joint",
                               ".*_hip_yaw_joint", ".*_knee_joint"],
-            stiffness={".*_hip_pitch_joint": 100.0, ".*_hip_roll_joint": 100.0,
-                       ".*_hip_yaw_joint": 100.0, ".*_knee_joint": 150.0},
-            damping={".*_hip_pitch_joint": 2.0, ".*_hip_roll_joint": 2.0,
-                     ".*_hip_yaw_joint": 2.0, ".*_knee_joint": 4.0},
-            effort_limit_sim=200.0, velocity_limit_sim=100.0)
+            stiffness={".*_hip_.*_joint": 100.0, ".*_knee_joint": 150.0},
+            damping={".*_hip_.*_joint": 2.0, ".*_knee_joint": 4.0},
+            armature=0.03, effort_limit_sim=300.0, velocity_limit_sim=100.0)
         g.actuators["feet"] = ImplicitActuatorCfg(
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            stiffness=40.0, damping=2.0, effort_limit_sim=100.0, velocity_limit_sim=100.0)
+            stiffness=40.0, damping=2.0, armature=0.03,
+            effort_limit_sim=100.0, velocity_limit_sim=100.0)
+        g.actuators["waist"] = ImplicitActuatorCfg(
+            joint_names_expr=["waist_.*_joint"],
+            stiffness=200.0, damping=5.0, armature=0.001,
+            effort_limit_sim=300.0, velocity_limit_sim=100.0)
+        g.actuators["arms"] = ImplicitActuatorCfg(
+            joint_names_expr=[".*_shoulder_.*_joint", ".*_elbow_joint", ".*_wrist_.*_joint"],
+            stiffness=40.0, damping=10.0, armature=0.001,
+            effort_limit_sim=300.0, velocity_limit_sim=100.0)
+        if spawn_at_manip:
+            mx, my = ROBOTS[idx]["manip"]
+            spawn = (mx, my, ROBOT_Z)
+        else:
+            spawn = ROBOTS[idx]["approach"]
         g.init_state = g.init_state.replace(
-            pos=ROBOTS[idx]["approach"],
+            pos=spawn,
             rot=yaw_to_quat(ROBOTS[idx]["yaw_deg"]),
             joint_pos=dict(WALK_DEFAULT_JOINTS),
         )
