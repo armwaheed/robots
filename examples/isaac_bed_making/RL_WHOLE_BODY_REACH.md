@@ -4,22 +4,28 @@
 > own two feet while bending over a bed and pulling a sheet** — the loco-manipulation skill a walking
 > policy cannot hold. Trained end-to-end in **NVIDIA Isaac Lab** on a **DGX Spark (GB10, aarch64)**.
 >
-> Just as important as the robot: **how it was built.** This is an *engineering* project, not a
-> research one — the goal was to **apply** existing robot-learning research to one concrete problem,
-> not to invent a new method. See [§1](#1-the-engineering-approach).
+> *Loco-manipulation = moving and manipulating at the same time. The hard part isn't the reach or the
+> balance alone — it's holding both **together** when the reach pulls the robot off balance.*
+>
+> Just as important as the robot: **how it was built.** This is an *engineering* project — the goal was
+> to **apply** existing robot-learning research to one concrete problem, not to invent a new method.
+> See [§1](#1-the-engineering-approach).
 
 ![Planted reach over the bed](media/rl/bed_pull_reach.png)
 
 *The current policy: a free-base G1 leans over the bedside — feet planted outside the bed, knees
 against it — to reach a target on the mattress, balancing entirely on its own (no base pinning, no
-teleporting, no joint freezing).*
+teleporting, no joint freezing). "Free base" = the robot is **not** bolted to the world; it has to keep
+itself upright, exactly like the real hardware.*
 
 **🎬 Policy video (current iteration):** [`media/rl/bed_pull_policy.mp4`](media/rl/bed_pull_policy.mp4)
 &nbsp;•&nbsp; **Deployable policy (committed):** [`rl/policy/policy.onnx`](rl/policy/policy.onnx) · [`rl/policy/policy.pt`](rl/policy/policy.pt)
 
-> **This is a living document.** It tracks the policy as it evolves toward a fully working two-G1
-> bed-making demo. It currently covers two iterations (free-space reach → planted bed-pull) and will be
-> updated at the next step. See [§9](#9-status--whats-next).
+> **Status — read this first.** The policy is **verified in isolation** (clean, eye-checked video above).
+> Wiring it into the **full two-G1 demo** with the real cloth sheet is **in progress**: one robot already
+> reaches and grips the sheet *while staying planted*, but the sustained pull-load and an asymmetric fall
+> are the next iteration ([§7](#7-status--whats-next)). **This is a living document** — it tracks the
+> policy as it evolves and will be updated at the next step.
 
 ---
 
@@ -27,73 +33,93 @@ teleporting, no joint freezing).*
 
 There are two ways to attack a hard robotics problem. A **researcher** asks *"what new method could
 solve this?"* and sets out to discover one. An **engineer** asks *"whose already-solved pieces can I
-assemble into a working system for my specific problem?"* — and treats inventing something novel as a
-last resort, not a first move. **This project is deliberately the engineer's path.**
+assemble into a working system for my problem?"* — and treats inventing something novel as a last
+resort, not a first move. **This project is deliberately the engineer's path**, and that is a choice
+worth defending: most of applied physical AI is *integration under real-world constraints*, not new
+theory.
 
-Almost every hard part below was solved by **reusing existing work and adapting it**:
+That doesn't mean it was easy. Two things took genuine systems problem-solving:
+- **We solved an open NVIDIA problem.** The 5-finger Inspire-hand G1 can't be given a free (mobile)
+  base by the documented switch — and NVIDIA's own forum thread on exactly this is **unanswered**. We
+  found a reusable fix (a tiny override USD; [§6](#6-the-research--resources-we-reused)).
+- **We deployed an Isaac Lab policy *outside* its training env** — reverse-engineering the exact 151-D
+  observation and action mapping so the policy runs inside the two-robot demo, not just the RL harness.
 
-- The whole-body balance-while-reach formulation rides **Isaac Lab's native locomotion RL rails** and
-  the **rsl-rl** PPO recipe — we reformulated "track a velocity" into "reach a hand target," not a new
-  algorithm.
-- Making the robot **hold a load / survive the sheet slipping** is **force-adaptive whole-body control**
-  straight out of the recent literature (**FALCON**, and the unified position/force loco-manipulation
-  work) — applied as an external-force domain-randomization term.
-- The **two-stage shaping** (learn to reach + balance first, *then* add force disturbances) is the
-  pattern in **NVIDIA's Isaac Lab 2.3 Whole-Body Control** and **GR00T N1.6** writeups.
-- The **free-base Inspire-hand robot**, the **rsl_rl config-schema fix**, and the **headless video**
-  workaround all came from specific **NVIDIA forum threads, GitHub issues, and a published PR**
-  ([§5](#5-the-research--resources-we-reused)).
+Everything *else* was found and applied rather than invented: the balance-while-reach formulation rides
+**Isaac Lab's locomotion RL rails** and the **PPO** recipe (PPO = the standard RL training algorithm);
+the load/grip-slip robustness is **force-adaptive whole-body control** from the recent literature
+(**FALCON**); the *learn-to-reach-then-add-force* curriculum is **NVIDIA's Isaac Lab 2.3** pattern.
 
-**Why this matters for applied physical AI — the human/AI division of labour.** Working with a partner
-AI (Claude Code) made a clean split natural, and it is the split that scales:
+### The real insight: the human/AI division of labour
+
+Working with a partner AI (Claude Code) made one split natural — and it is the split that *scales*
+applied physical AI:
 
 | The **human engineer** owns the *abstract* problem-solving | The **partner AI** owns the *implementation* problem-solving |
 |---|---|
-| What to build; which research applies; the physics/architecture decisions (e.g. *"keep the feet planted — that's the bug,"* *"a sustained pull-load is the next gap"*) | Writing the Isaac Lab env, reverse-engineering the 151-D observation, wiring obs↔action, debugging launches, running and babysitting training jobs |
-| Judgement: **verify by what the human sees** (rendered video), reject over-claims, decide the next iteration | Generating the candidate fix, the probe scripts, the convergence plots, this document |
+| What to build; which research applies; the physics/architecture calls (*"keep the feet planted — that's the bug,"* *"a sustained pull-load is the next gap"*) | Writing the env, reverse-engineering the observation, wiring it up, debugging launches and topples, running and babysitting training |
+| Judgement: **verify by what the human sees** (rendered video), reject over-claims, decide the next iteration | The candidate fixes, the probe scripts, the convergence plots, this document |
 
-The scarce resource in physical AI is **human reasoning about the physical world**. Pushing the
-*computational and implementation* burden onto the AI lets that reasoning be spent on the decisions
-that actually need a human — which research to apply, what "working" looks like, and where the real
-gap is — and lets one engineer move at the pace of a team.
+A rough sense of the split for *this* iteration — and the point is the asymmetry:
+
+- **Human decisions fit in a few sentences:** keep it physically valid (no kinematic cheats); use the
+  Inspire hands; start the robot *hands-at-its-sides*; the bug is that it won't stay *planted*; train it
+  to lean-and-pull without losing balance; here's the research that applies; verify by eye; and push
+  *walking / giving-up / avoiding others* down to the behaviour layer.
+- **The AI did essentially everything else:** the RL environment and its custom reward + force terms,
+  the bed-obstacle scene, the out-of-env deployment, the launch/topple debugging, the training/eval/probe
+  runs, the convergence analysis, and this writeup.
+
+The scarce resource in physical AI is **human reasoning about the physical world.** Pushing the
+*computational and implementation* burden onto the AI spends that reasoning only where a human is truly
+required — which research to apply, what "working" looks like, and where the real gap is — and lets one
+engineer move at the pace of a team.
 
 ---
 
 ## 2. The problem (why it's hard)
 
 Two G1s making a bed must **lean out over the mattress and pull a sheet** — a deep forward-and-down
-reach. A locomotion (walking) policy keeps the robot upright *while walking*, but the instant it bends
-to reach over the bed, the **centre of mass travels past the feet and the robot topples.** We confirmed
-this every other way first:
+reach. A locomotion (walking) policy keeps the robot upright *while walking*, but the instant it bends to
+reach over the bed, the **centre of mass (CoM) travels past the feet and the robot topples.** We
+confirmed this every other way first:
 
 - A stationary **inverse-kinematics stand-and-reach** topples on the sustained lean.
 - A **drag-while-walking** strategy snags or launches the robot when the hand grips the cloth.
 - The official **velocity-walk policy** balances beautifully while striding but cannot hold the bend.
 
-The fix is a **single whole-body policy that owns balance *and* reach at once** — legs/ankles
-counter-lean, the waist bends, the arm extends, all learned together so the reach never becomes a fall.
+The fix is a **single whole-body policy** — one controller for the legs, waist *and* arms — that owns
+balance *and* reach at once, so the reach never becomes a fall.
 
-> **Methodology rule held throughout:** *verify by what the human sees* (rendered video), never by
-> reward telemetry alone. Every claim below is eye-verified.
+> **Methodology rule held throughout:** *verify by what the human sees* (rendered video), never by reward
+> telemetry alone. Every claim below is eye-verified.
 
 ---
 
 ## 3. The policy, in two iterations
 
+```mermaid
+flowchart LR
+    V1["Iteration 1<br/>free-space reach<br/>✓ balances while reaching<br/>✗ walks off its spot beside a bed"]
+    V2["Iteration 2 — now<br/>planted bed-pull<br/>+ station-keeping + bed obstacle<br/>+ grip-slip load<br/>✓ reaches planted, holds the load"]
+    V3["Next<br/>working two-G1 bed-making<br/>+ behaviour-layer release-on-resistance"]
+    V1 --> V2 --> V3
+```
+
 ### 3.1 Iteration 1 — whole-body *free-space* reach (the intermediate step)
 
-The first policy learned to **balance on a free base while reaching a hand target sampled in a
-forward-and-down cone** (no bed in the scene). It worked: the G1 squats and leans to targets from chest
+The first policy learned to **balance on a free base while reaching a hand target** sampled in a
+forward-and-down cone (no bed in the scene). It worked: the G1 squats and leans to targets from chest
 height to near the floor and **never topples** — reach error converged **37 cm → ~12 cm**.
 
 ![Free-space deep reach](media/rl/02_deep_reach.png) &nbsp; *(full clip: [`media/rl/bed_reach_policy.mp4`](media/rl/bed_reach_policy.mp4))*
 
 **Why it was only a stepping stone.** It proved balance-while-reach is learnable — but it had **no
 incentive to keep its feet planted.** In free space it was free to *step* toward a target to stay
-balanced. Put it beside a real bed (feet outside, reaching *over* the mattress) and it does exactly
-that: reaching forward shifts the CoM forward, so it **steps backward** to recover, the fixed sheet
-target then sits even farther forward in its receded frame, it leans harder — and it **walks itself off
-its spot and topples.** The missing ingredient was *staying planted*.
+balanced. Beside a real bed (feet outside, reaching *over* the mattress) it does exactly that: reaching
+forward shifts the CoM forward, so it **steps backward** to recover, the fixed sheet target then sits
+even farther forward in its receded frame, it leans harder — and it **walks itself off its spot and
+topples.** The missing ingredient was *staying planted*.
 
 ### 3.2 Iteration 2 — *planted bed-pull* (current policy)
 
@@ -102,22 +128,18 @@ The current policy keeps the same balance-while-reach core and adds exactly what
 
 | Added this iteration | What it does | Reused from |
 |---|---|---|
-| **Station-keeping reward** | Penalises the base drifting off its spawn spot → it reaches by *leaning/squatting with planted feet*, not by stepping away. The fix for the walk-off. | standard locomotion reward shaping |
-| **Bed as a collision obstacle** in front | The robot must bend *over* the bedside (feet outside, knees against it) — the real constraint a free-space policy never feels. | — (the deployment scene, brought into training) |
-| **Grip-slip / sheet-tension load** | A random horizontal force on the hand that **toggles on and off** → the policy learns to absorb a *sudden* load change without toppling ("don't fall when the sheet slips or you let go"). | **FALCON** force-adaptive WBC; **unified position/force** loco-manip; Isaac Lab 2.3 force-disturbance curriculum |
+| **Station-keeping** reward | Penalises the base drifting off its spawn spot → it reaches by *leaning/squatting with planted feet*, not by stepping away. The fix for the walk-off. (*Station-keeping = stay on your spot.*) | standard locomotion reward shaping |
+| **Bed as a collision obstacle** | The robot must bend *over* the bedside (feet outside, knees against it) — the real constraint a free-space policy never feels. | the deployment scene, brought into training |
+| **Grip-slip / sheet-tension load** | A random horizontal force on the hand that **toggles on and off** → the policy learns to absorb a *sudden* load change without toppling ("don't fall when the sheet slips or you let go"). | **FALCON** force-adaptive WBC; unified position/force loco-manip; Isaac Lab 2.3 force-disturbance curriculum |
 | **Wider reach + drag workspace** | Targets span forward **and both lateral sides** → the planted policy can reach *and drag headward* in any needed direction. | — |
-| **Natural idle-arm regularizer** | Keeps the non-reaching arm from contorting into an uncanny counter-balance (small counter-motions still allowed). | standard posture regularization |
-
-**Result (eye-verified, [§4](#4-result-eye-verified-current-policy)):** the G1 **leans over the bed,
-stays planted at the edge, holds the toggling grip-slip load, and reaches targets across the surface —
-forward and lateral — without toppling.** Reach error tightened to **~6 cm**.
+| **Natural idle-arm** regularizer | Keeps the non-reaching arm from contorting into an uncanny counter-balance (small counter-motions still allowed). | standard posture regularization |
 
 ---
 
 ## 4. Result (eye-verified, current policy)
 
-Across the full clip the policy reaches targets on and above the bed surface (forward **and** lateral —
-the headward drag direction), **balancing on its own feet and staying planted at the bedside the entire
+In isolation the policy reaches targets on and above the bed surface (forward **and** lateral — the
+headward drag direction), **balancing on its own feet and staying planted at the bedside the entire
 time.**
 
 | Lean over the bedside | Lateral reach (drag direction) |
@@ -126,26 +148,49 @@ time.**
 
 🎬 **[`media/rl/bed_pull_policy.mp4`](media/rl/bed_pull_policy.mp4)** — 350 frames, no topple.
 
-**Convergence** (2048 envs, 1000 PPO iterations, ~30 min on one GB10):
-
-- Hand→target error: **~37 cm → ~6 cm**
-- Base drift (station-keeping): small and stable → **stays planted**
-- Falls: rare, even with the grip-slip load toggling → **balance holds through the load change**
-
-*(The iteration-1 convergence curve is below for reference — same training rig, before the bedside
+**Convergence** (2048 parallel robots, 1000 PPO iterations, ~30 min on one GB10): hand→target error
+**~37 cm → ~6 cm**; base drift stays small and stable (**planted**); falls are rare even with the
+grip-slip load toggling. *(The iteration-1 curve below is for reference — same rig, before the bedside
 additions.)*
 
 ![Iteration-1 training convergence](media/rl/convergence.png)
 
-> **Honest caveats.** ~6 cm is *near*, not pinpoint. And this is the **policy in isolation** — wiring it
-> into the full two-G1 demo with the real particle-cloth sheet is in progress: one robot already reaches
-> and grips the sheet *while staying planted* (the fix working in context), but the **sustained** pull
-> against the cloth still over-loads the policy, and one robot falls asymmetrically. Those are the next
-> iteration ([§9](#9-status--whats-next)) — and a good example of *not over-claiming.*
+> **Honest caveats — and why they're here.** ~6 cm is *near*, not pinpoint. And this is the **policy in
+> isolation.** In the full two-G1 demo with the real particle-cloth sheet, one robot already reaches and
+> grips the sheet *while staying planted* (the fix working in context), but the **sustained** pull against
+> the cloth still over-loads the policy and one robot falls asymmetrically. Those are the next iteration
+> ([§7](#7-status--whats-next)). We surface this on purpose: engineers should trust a result more, not
+> less, when its limits are stated plainly.
 
 ---
 
-## 5. The research & resources we reused
+## 5. Architecture — who owns what
+
+A clean two-layer split (the consensus across the loco-manipulation literature) keeps the RL job
+tractable: the **low-level policy stays reactive**; **all decisions live above it.**
+
+```mermaid
+flowchart TB
+    subgraph HL["Behaviour + coordination layer — DECISIONS"]
+        A["pick the corner · where to stand"]
+        B["walk there — velocity-walk policy"]
+        C["release if resistance too high → retry / ask a peer"]
+        D["coordinate the two robots over Device Connect"]
+    end
+    subgraph LL["Low-level whole-body RL policy — REACTIVE"]
+        E["one policy · 29 joints · 50 Hz<br/>balance + reach + absorb the load"]
+    end
+    HL -- "hand target (base frame)" --> LL
+    LL -- "stays upright, holds the load" --> HL
+```
+
+So *walking to different positions*, *deciding to let-go / retry / ask a peer for help*, and *avoiding
+another robot* are **behaviour-layer** jobs — not terms in the RL reward. Trying to train those into the
+balance policy would make it intractable and brittle.
+
+---
+
+## 6. The research & resources we reused
 
 The heart of the engineering approach: **almost nothing here was invented — it was found and applied.**
 
@@ -158,19 +203,19 @@ The heart of the engineering approach: **almost nothing here was invented — it
 - **AdaptManip: Adaptive Whole-Body Object Lifting with Online State Estimation** —
   [arXiv 2602.14363](https://arxiv.org/abs/2602.14363)
 - **NVIDIA Isaac Lab 2.3 — Whole-Body Control & teleoperation** (the *learn-to-reach-then-add-force*
-  curriculum and the low-level-WBC / high-level-task split we followed):
+  curriculum, and the low-level-WBC / high-level-task split we followed):
   [NVIDIA blog](https://developer.nvidia.com/blog/streamline-robot-learning-with-whole-body-control-and-enhanced-teleoperation-in-nvidia-isaac-lab-2-3/)
 - **NVIDIA Isaac GR00T N1.6 sim-to-real** (WBC as the low-level loco-manipulation layer):
   [NVIDIA blog](https://developer.nvidia.com/blog/building-generalist-humanoid-capabilities-with-nvidia-isaac-gr00t-n1-6-using-a-sim-to-real-workflow/)
 
 **NVIDIA forum threads / GitHub issues that directly unblocked us**
-- **Free-base Inspire-hand G1** — the stock `g1_29dof_inspire_hand.usd` ships fixed-base + gravity-off
-  and bakes the articulation root onto a `/Robot/root_joint` world pin; `fix_root_link=False` only
-  *disables* that joint and then `Failed to create articulation`. **NVIDIA's own forum thread on exactly
-  this is unanswered**, and their floating loco-manip env sidesteps it with the 3-finger Dex3 hand.
-  *Fix (reusable): a 955-byte override USD* ([`assets/g1_inspire_mobile.usd`](assets/g1_inspire_mobile.usd),
+- **Free-base Inspire-hand G1** — the stock `g1_29dof_inspire_hand.usd` ships fixed-base + gravity-off and
+  bakes the articulation root onto a `/Robot/root_joint` world pin; `fix_root_link=False` only *disables*
+  that joint and then `Failed to create articulation`. **NVIDIA's own forum thread on exactly this is
+  unanswered**, and their floating loco-manip env sidesteps it with the 3-finger Dex3 hand. *Fix
+  (reusable): a 955-byte override USD* ([`assets/g1_inspire_mobile.usd`](assets/g1_inspire_mobile.usd),
   built by [`rl/make_inspire_mobile_usd.py`](rl/make_inspire_mobile_usd.py)) that deactivates `root_joint`
-  and moves `ArticulationRootAPI` onto `pelvis` → a true floating base *with* the Inspire hands.
+  and moves `ArticulationRootAPI` onto `pelvis` → a true free base *with* the Inspire hands.
   → [NVIDIA forum 370590](https://forums.developer.nvidia.com/t/locomanipulation-with-inspire-5-finger-hand-mobile-base-usd-compatibility-issue/370590) *(unanswered; solved here)* ·
   [IsaacLab PR #3440 (Inspire arm-damping stability)](https://github.com/isaac-sim/IsaacLab/pull/3440)
 - **rsl_rl `KeyError: 'class_name'`** — Isaac Lab 2.3.2 ships rsl-rl-lib 5.x with a new `actor`/`critic`
@@ -192,7 +237,24 @@ The heart of the engineering approach: **almost nothing here was invented — it
 
 ---
 
-## 6. Platform & setup (DGX Spark, aarch64)
+## 7. Status & what's next
+
+**Done:** balance-while-reach learned (it.1) → **planted bedside reach + grip-slip robustness** (it.2,
+eye-verified in isolation). Policy committed at [`rl/policy/`](rl/policy/).
+
+**In progress — wiring into the two-G1 demo:** one robot already reaches and grips the real
+particle-cloth sheet *while staying planted*; remaining gaps for the next iteration:
+1. **Pull topple** — the real sheet is a *sustained, motion-opposing* load, harder than the training's
+   *random* toggling force. Next: a **behaviour-layer "release if resistance is too high → retry / ask a
+   peer for help"** (the decision belongs above the balance policy), and/or retrain the load to oppose the
+   drag direction.
+2. **Asymmetric fall** — one robot holds, its mirror falls; debug the bedside-specific cause.
+
+**This document will be updated** at the next iteration toward a fully working bed-making policy.
+
+---
+
+## Appendix A — Platform & setup (DGX Spark, aarch64)
 
 Getting Isaac Sim + Isaac Lab running well on the Spark is itself load-bearing.
 
@@ -205,17 +267,17 @@ Getting Isaac Sim + Isaac Lab running well on the Spark is itself load-bearing.
 | PyTorch | cu13 build; GB10 is sm_121 (newer than torch's max advertised arch) → warns but runs |
 | **aarch64 must-do** | `export LD_PRELOAD="$LD_PRELOAD:/lib/aarch64-linux-gnu/libgomp.so.1"` before every Isaac run |
 
-**Tips that saved hours:** build Isaac Sim **natively from source** on the Spark (prebuilt containers
-target x86_64); always `LD_PRELOAD` libgomp; run scripts **from the `IsaacLab` directory** (`./isaaclab.sh`
-is a relative launcher — `cd`-ing away first gives a silent `exit 127`); the 128 GB unified memory runs
-2048 parallel humanoids on only ~4 GB.
+**Tips that saved hours:** build Isaac Sim **natively from source** (prebuilt containers target x86_64);
+always `LD_PRELOAD` libgomp; run scripts **from the `IsaacLab` directory** (`./isaaclab.sh` is a relative
+launcher — `cd`-ing away first gives a silent `exit 127`); the 128 GB unified memory runs 2048 parallel
+humanoids on only ~4 GB.
 
 ---
 
-## 7. The current training configuration
+## Appendix B — The exact training configuration
 
-A **manager-based RL environment on Isaac Lab's native rails** (so it trains with the bundled
-rsl-rl-lib). Free-base G1, 29 body DOF + Inspire 5-finger hands, gravity on, **no kinematic cheats.**
+A **manager-based RL environment on Isaac Lab's native rails**. Free-base G1, 29 body DOF + Inspire
+5-finger hands, gravity on, **no kinematic cheats.**
 
 ### Environment / simulation
 | Parameter | Value |
@@ -241,6 +303,9 @@ rsl-rl-lib). Free-base G1, 29 body DOF + Inspire 5-finger hands, gravity on, **n
 | `action_rate` / `dof_acc` / `dof_torques` / `dof_pos_limits` | small | smooth, hardware-able motion |
 
 ### Hand-target workspace (base frame) · domain randomization
+*Domain randomization = deliberately varying sim parameters during training so the policy is robust on
+real hardware, not tuned to one perfect sim.*
+
 | Axis | Range (m) | | DR term | Value |
 |---|---|---|---|---|
 | x forward | 0.18 → 0.55 | | friction (static/dyn) | 0.7–1.1 / 0.5–0.9 |
@@ -259,7 +324,7 @@ Actor/critic MLP `[512, 256, 128]` ELU · LR 1e-3 adaptive (target KL 0.01) · �
 
 ---
 
-## 8. Reproduce it
+## Appendix C — Reproduce it
 
 ```bash
 # Always from the IsaacLab dir; LD_PRELOAD is mandatory on aarch64.
@@ -282,23 +347,6 @@ export LD_PRELOAD="$LD_PRELOAD:/lib/aarch64-linux-gnu/libgomp.so.1"
 Code (all under [`rl/`](rl/)): `robot_cfg.py` (mobile Inspire cfg + PD gains), `bed_reach_env_cfg.py`
 (scene / bed / command / reward / termination), `mdp.py` (station-keeping reward + grip-slip force),
 `agents.py` (PPO cfg), `train.py`, `play.py`, `make_inspire_mobile_usd.py`.
-
----
-
-## 9. Status & what's next
-
-**Done:** balance-while-reach learned (it.1) → **planted bedside reach + grip-slip robustness** (it.2,
-eye-verified in isolation). Policy committed at [`rl/policy/`](rl/policy/).
-
-**In progress — wiring into the two-G1 demo:** one robot already reaches and grips the real
-particle-cloth sheet *while staying planted*; remaining gaps for the next iteration:
-1. **Pull topple** — the real sheet is a *sustained, motion-opposing* load, harder than the training's
-   *random* toggling force. Next: a **behaviour-layer "release if resistance is too high → retry / ask a
-   peer for help"** (the decision belongs above the balance policy), and/or retrain the load to oppose the
-   drag direction.
-2. **Asymmetric fall** — one robot holds, its mirror falls; debug the bedside-specific cause.
-
-**This document will be updated** at the next iteration toward a fully working bed-making policy.
 
 ---
 
