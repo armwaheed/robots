@@ -75,10 +75,21 @@ def parse_args():
                    help="Use the open-loop dataset arm replay instead of closed-loop corner manipulation.")
     p.add_argument("--replay-speed", type=float, default=1.0, help="Playback speed of the recorded arm motion.")
     p.add_argument("--lag", type=float, default=0.4, help="Seconds robot 1 trails robot 0 in the replay.")
+    p.add_argument("--pink", action="store_true",
+                   help="Use the legacy Pink-IK stand-and-reach for PHASE 2 (legs balanced by the "
+                        "velocity policy, arms+waist by Pink IK) instead of the default whole-body RL "
+                        "reach policy. Kept for A/B; topples on a deep reach.")
     return p.parse_known_args()[0]
 
 
 ARGS = parse_args()
+
+# The default path: the whole-body bed-reach RL policy drives the manipulation. It owns the
+# legs (balance) AND the arms+waist (reach), and the robot starts standing with its hands at
+# its SIDES — the policy's own neutral pose — so there is no velocity-walker handoff and no
+# scripted arm motion to topple it. The legacy velocity-walk + Pink-IK / dataset-replay paths
+# (--pink / --replay) still use the walker.
+RL_PATH = not (ARGS.pink or ARGS.replay)
 
 # Import eigenpy + pinocchio BEFORE the Isaac app launches so eigenpy registers its
 # StdVec_StdString converter first. Launching the app afterwards otherwise shadows
@@ -122,7 +133,10 @@ def main() -> int:
         print(f"[setup] {msg}", flush=True)
 
     mark("building scene cfg (Inspire 5-finger G1s, headboard + pillows)")
-    SceneCfg = scenemod.build_scene_cfg(G1_INSPIRE_FTP_CFG, spawn_at_manip=ARGS.no_walk)
+    # The RL path spawns the G1s at their bedside marks (a legitimate start pose, not a
+    # teleport) so the whole-body reach policy can take over directly — the velocity-walk
+    # approach-walk + handoff is only for the legacy --pink/--replay paths.
+    SceneCfg = scenemod.build_scene_cfg(G1_INSPIRE_FTP_CFG, spawn_at_manip=ARGS.no_walk or RL_PATH)
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=SIM_DT, device="cuda:0", use_fabric=True))
     scene = InteractiveScene(SceneCfg(num_envs=1, env_spacing=8.0))
     mark("scene built")
@@ -181,12 +195,15 @@ def main() -> int:
     walk = {i: locomod.VelocityWalker(robots[i], sim.device, SIM_DT * DECIMATION) for i in (0, 1)}
     stance = walk          # the same policy balances in place at zero command
     locos = walk
-    # Seat each G1 in the policy's default walking pose (bent elbows etc.) so the very
-    # first observation is consistent: the scene spawns the legs at this default but the
-    # arms at zero, and the policy expects joint_pos_rel ≈ 0 at the start.
-    for i in (0, 1):
-        dpos, dids = walk[i].default_pose()
-        robots[i].write_joint_state_to_sim(dpos, torch.zeros_like(dpos), joint_ids=dids)
+    # Seat each G1 in the velocity-walk policy's default pose (bent elbows etc.) so its first
+    # observation is consistent — ONLY for the legacy walk paths. The RL path deliberately
+    # leaves the arms at the spawn default (hands at the SIDES, the bed-reach policy's neutral
+    # pose): seating the bent-elbow walking pose and handing that to the reach policy makes it
+    # emit a destabilizing action and topples it (verified by eye). Hands at sides → clean start.
+    if not RL_PATH:
+        for i in (0, 1):
+            dpos, dids = walk[i].default_pose()
+            robots[i].write_joint_state_to_sim(dpos, torch.zeros_like(dpos), joint_ids=dids)
     mark("locomotion ready (unitree_rl_lab velocity walk-in + stand, GPU/torch)")
 
     # ── bedsheet: flat, gathered toward the foot (head half of the bed bare) ──
@@ -214,8 +231,17 @@ def main() -> int:
         "L": {i: PinkArmIK(robots[i], "left", sim.device, SIM_DT * DECIMATION, with_waist=False) for i in (0, 1)},
         "gR": {i: FingerGrip(robots[i], "right", sim.device) for i in (0, 1)},
         "gL": {i: FingerGrip(robots[i], "left", sim.device) for i in (0, 1)},
-    }
+    } if ARGS.pink else {}
     reps = {i: TrajectoryReplay(robots[i], sim.device) for i in (0, 1)} if ARGS.replay else {}
+
+    # ── whole-body bed-reach RL policy (the default PHASE 2 path) ──
+    # One policy per robot owns ALL 29 body joints, so it BALANCES on its own feet while
+    # leaning + squatting to reach a commanded hand target — the loco-manipulation skill the
+    # walking-balance policy can't hold (issue #2 RL session). Trained in Isaac Lab
+    # (rl/bed_reach_env_cfg.py), deployed via the exported TorchScript actor. Unused for the
+    # legacy --pink path and the dataset --replay path.
+    bedreach = ({i: locomod.BedReachPolicy(robots[i], sim.device) for i in (0, 1)}
+                if not (ARGS.pink or ARGS.replay or ARGS.walk_only) else {})
 
     # ── Device Connect swarm ──
     coord = None
@@ -332,13 +358,17 @@ def main() -> int:
         print("  ".join(parts), flush=True)
 
     # ── PHASE 0: find footing (the velocity policy balances in place) + sheet settles ──
-    print("[demo] robots find their footing; the sheet settles onto the foot of the bed…")
-    control(lambda i: (stance[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)),
-            cap_every=4, pols=stance)
-    diag("after stand-settle")
+    # Legacy walk paths only. The RL path skips this: the bed-reach policy balances the robot
+    # (from its hands-at-sides spawn) and lets the sheet settle in run_bedmaking_rl's own
+    # opening phase — no velocity walker involved.
+    if not RL_PATH:
+        print("[demo] robots find their footing; the sheet settles onto the foot of the bed…")
+        control(lambda i: (stance[i].stand(), False), n_ctl=int(1.5 / (DECIMATION * sim_dt)),
+                cap_every=4, pols=stance)
+        diag("after stand-settle")
 
-    # ── PHASE 1: learned approach-walk ──
-    if not ARGS.no_walk:
+    # ── PHASE 1: learned approach-walk (legacy walk paths only) ──
+    if not ARGS.no_walk and not RL_PATH:
         if coord:
             for i in (0, 1):
                 coord.invoke(i, "walkToNextCorner", direction="approach")
@@ -348,33 +378,36 @@ def main() -> int:
         diag(f"arrived after {steps} control steps")
 
     # ── PHASE 2: make the bed — the robots BALANCE ON THEIR OWN FEET throughout ──
-    # No pin, no teleport, no kinematic freeze: the velocity policy keeps balancing the
-    # legs (``balance()`` below, legs-only so it doesn't fight the arms) while Pink IK
-    # drives the arms + waist to reach the sheet. Every motion is one a real G1 could do.
+    # No pin, no teleport, no kinematic freeze — every motion is one a real G1 could do.
     if not ARGS.walk_only:
-        # Settle a moment where the robots ARE (walked-in, or --no-walk spawned at the mark)
-        # so both feet are planted before the arms start.
-        print("[demo] at the bedside — finding a steady stance before reaching…", flush=True)
-        control(lambda i: (stance[i].stand(), False), n_ctl=int(0.8 / (DECIMATION * sim_dt)),
-                cap_every=4, pols=stance)
-        # Gain-schedule the waist + arms firmer for the reach (legitimate control gains — the
-        # joints still obey PD dynamics, nothing kinematic). Keep them well below the stock
-        # rigid manipulation values so a sharp arm command can't kick the free base over; the
-        # legs keep their soft walk gains so the policy can still balance them.
-        for i in (0, 1):
-            wids, _ = robots[i].find_joints(["waist_.*_joint"])
-            aids, _ = robots[i].find_joints([".*_shoulder_.*_joint", ".*_elbow_joint",
-                                             ".*_wrist_.*_joint"])
-            robots[i].write_joint_stiffness_to_sim(300.0, joint_ids=wids)
-            robots[i].write_joint_damping_to_sim(8.0, joint_ids=wids)
-            robots[i].write_joint_stiffness_to_sim(150.0, joint_ids=aids)
-            robots[i].write_joint_damping_to_sim(10.0, joint_ids=aids)
-        capture()
-        diag("at the bedside (balancing on its own feet)")
+        if ARGS.replay or ARGS.pink:
+            # Legacy paths: the velocity policy balances the legs; settle a moment so both feet
+            # are planted before the arms start.
+            print("[demo] at the bedside — finding a steady stance before reaching…", flush=True)
+            control(lambda i: (stance[i].stand(), False), n_ctl=int(0.8 / (DECIMATION * sim_dt)),
+                    cap_every=4, pols=stance)
+            capture()
+            diag("at the bedside (balancing on its own feet)")
         if ARGS.replay:
             run_replay(reps, robots, balance, coord, step, capture, diag, sim_dt)
-        else:
+        elif ARGS.pink:
+            # Legacy Pink-IK stand-and-reach: the velocity policy balances the legs while Pink
+            # IK drives arms+waist. Gain-schedule the waist+arms firmer for the IK (still PD
+            # dynamics, nothing kinematic), well below the stock rigid values so a sharp arm
+            # command can't kick the free base over; legs keep their soft walk gains.
+            for i in (0, 1):
+                wids, _ = robots[i].find_joints(["waist_.*_joint"])
+                aids, _ = robots[i].find_joints([".*_shoulder_.*_joint", ".*_elbow_joint",
+                                                 ".*_wrist_.*_joint"])
+                robots[i].write_joint_stiffness_to_sim(300.0, joint_ids=wids)
+                robots[i].write_joint_damping_to_sim(8.0, joint_ids=wids)
+                robots[i].write_joint_stiffness_to_sim(150.0, joint_ids=aids)
+                robots[i].write_joint_damping_to_sim(10.0, joint_ids=aids)
             run_bedmaking(manip, balance, coord, step, capture, diag, stage, cloth_view, sheet)
+        else:
+            # Default RL path: the whole-body reach policy owns legs+waist+arms and balances the
+            # robot from its hands-at-sides spawn — no walker, no scripted arm motion.
+            run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet)
     else:
         diag("walk-only: standing at the bedside")
 
@@ -548,6 +581,110 @@ def run_bedmaking(manip, balance, coord, step, capture, diag, stage, cloth_view,
         if s % 4 == 0:
             capture()
     diag("after bed-making")
+    capture()
+
+
+def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet):
+    """Make the bed with the whole-body loco-manipulation RL policy (issue #2 RL session).
+
+    ONE policy per robot owns all 29 body joints, so it BALANCES on its own two feet *while* it
+    leans and squats to reach the sheet — the skill a walking-balance policy can't hold (it
+    step-recovers on the deep lean and topples). There is no velocity walker and no scripted arm
+    motion: the robot starts standing with its hands at its SIDES (the policy's own neutral pose —
+    demo.main deliberately does not seat the walker's bent-elbow pose for this path), and the
+    policy does everything. We feed each robot a WORLD hand target each control step (it transforms
+    it into its base frame and solves the whole-body motion in one forward pass). No pin, no
+    teleport, no joint freeze — physically valid for sim-to-real.
+
+    Each G1, flanking its side of the bed, reaches down onto the sheet's near head-side edge,
+    grips it (a PhysX cloth attachment — the legitimate grip-lock; MuJoCo's grasp was likewise a
+    kinematic weld), and draws it a short way toward the head. Robot 0 works the −y side, robot 1
+    the +y side.
+
+    HONEST SCOPE: the policy was trained to REACH a forward+down target (onto the bed), which it
+    does while balancing. A full corner-to-corner headward SPREAD is a *lateral* sweep in the
+    robot's base frame — outside the trained reach cone — so the headward draw here is kept short.
+    Widening it needs a wider-workspace retrain or reorienting the robots to face the head."""
+    sign = {0: -1.0, 1: 1.0}
+    MX = scenemod.MANIP_X
+    TOP = scenemod.BED_TOP_Z
+    # World grip point on the sheet's head-side edge, ~0.33 m toward bed centre from the robot
+    # (≈ base-frame +x 0.33). The PLANTED bed-pull policy (trained with station-keeping + the bed
+    # obstacle + a grip-slip load) reaches this far over the bed and HOLDS its spot, so we no
+    # longer have to keep the reach shallow to avoid the walk-off. The headward draw is now a real
+    # ~0.30 m drag (world −x ≈ base +y for these yaw-90 robots) — within the trained lateral range.
+    REACH_Y = 0.72
+    GRIP_Z = TOP + 0.06              # ≈0.72 — at the cover top
+    APPROACH_Z = TOP + 0.16          # hover above the cover first (no contact)
+    PULL_DX = -0.30                  # headward draw (world −x ≈ base +y for yaw-90 robots)
+    PULL_DZ = 0.05                   # slight lift as it draws
+    GRASP_OFFSET = 0.14              # cloth within this many m of the wrist is caught by the grip
+
+    def reach(i, z):
+        return (MX, sign[i] * REACH_Y, z)
+
+    def pull(i):
+        return (MX + PULL_DX, sign[i] * REACH_Y, GRIP_Z + PULL_DZ)
+
+    def run(n_ctl, tgt_fn, cap=3):
+        for i in (0, 1):
+            bedreach[i].set_world_target(tgt_fn(i))
+        for s in range(n_ctl):
+            for i in (0, 1):
+                bedreach[i].act()       # the policy owns the whole body (legs balance, arms reach)
+            step(DECIMATION)
+            if s % cap == 0:
+                capture()
+
+    def secs(t):
+        return max(1, int(t / (DECIMATION * SIM_DT)))   # 50 Hz control
+
+    # 0) Stand + steady. The robot starts standing with its hands at its SIDES (the reach
+    #    policy's neutral pose). From frame one the policy balances it on its own two feet while
+    #    the sheet drapes onto the bed — no walker, no scripted arm motion. We hold a gentle
+    #    in-front target so it eases the right hand up to a ready height above the cover.
+    for i in (0, 1):
+        bedreach[i].reset()
+    print("[demo] the G1s stand at the bedside (hands at their sides) and steady themselves…",
+          flush=True)
+    run(secs(1.8), lambda i: reach(i, APPROACH_Z), cap=4)
+    diag("steady at the bedside (balancing on its own feet)")
+
+    # 1) reach down onto the sheet's near head edge (balancing on its own two feet).
+    if coord:
+        coord.invoke(0, "pickUpBedSheet", corner="A")
+        coord.invoke(1, "pickUpBedSheet", corner="B")
+    print("[demo] reaching down onto the sheet…", flush=True)
+    run(secs(2.0), lambda i: reach(i, GRIP_Z))
+    diag("hand on the sheet")
+
+    # 2) grip the cover — PhysX cloth attachment at the wrist. Fingers stay OPEN (default) so the
+    #    policy's joint observation stays in-distribution (closing the Inspire fingers feeds it
+    #    joint angles it never saw in training).
+    for i in (0, 1):
+        clothmod.grasp(stage, sheet.prim_path,
+                       f"/World/envs/env_0/Robot_{i}/right_wrist_yaw_link",
+                       f"/World/Sheet_grasp_{i}", bind_offset=GRASP_OFFSET)
+    print("[demo] gripped the cover…", flush=True)
+    run(secs(0.6), lambda i: reach(i, GRIP_Z))
+    diag("gripped")
+
+    # 3) draw the cover toward the head (short, balanced) + a help exchange over Device Connect.
+    if coord:
+        coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
+        coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
+    print("[demo] drawing the cover toward the head…", flush=True)
+    run(secs(2.5), pull, cap=2)
+    diag("drew the cover up")
+
+    # 4) release + settle.
+    for i in (0, 1):
+        clothmod.release(stage, f"/World/Sheet_grasp_{i}")
+    if coord:
+        coord.invoke(0, "putDownBedSheet", corner="A")
+        coord.invoke(1, "putDownBedSheet", corner="B")
+    run(secs(1.2), pull, cap=4)
+    diag("after bed-making (RL)")
     capture()
 
 

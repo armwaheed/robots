@@ -120,6 +120,9 @@ def make_bed_g1_cfg(prim_path: str = "{ENV_REGEX_NS}/Robot"):
 
     g.init_state = g.init_state.replace(
         pos=(0.0, 0.0, SPAWN_Z),
+        # Identity yaw = facing +x (the demo's yaw_to_quat(0)); the bed-reach env puts the bed
+        # obstacle in front at +x, so the robot squares up to it the way it faces a real bedside.
+        rot=(1.0, 0.0, 0.0, 0.0),
         joint_pos=dict(DEFAULT_JOINT_POS),
         joint_vel={".*": 0.0},
     )

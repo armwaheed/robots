@@ -33,6 +33,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide as feet_slide_fn
 from isaaclab_tasks.manager_based.manipulation.reach.mdp import position_command_error, position_command_error_tanh
 
+from .mdp import base_xy_anchor_l2, randomize_ee_load
 from .robot_cfg import (
     BODY_JOINTS,
     FOOT_BODIES,
@@ -50,8 +51,13 @@ REACH_BODY = RIGHT_EE_BODY
 ##
 @configclass
 class BedReachSceneCfg(InteractiveSceneCfg):
-    """Flat ground + the free-base Inspire-hand G1. No bed: the reach target lives in a
-    forward+down workspace that mimics the bed-corner positions; the bed is added at deploy."""
+    """Flat ground + the free-base Inspire-hand G1 + a BED in front of it. The robot faces +x
+    (small yaw noise) and the bed sits just ahead, so it must bend OVER the bedside — feet
+    outside, knees/shins against the bed's near face — to reach the sheet, the real constraint a
+    free-space reach policy never feels (and why that policy walks itself off its spot beside a
+    real bed). The reach target lives on/above the bed surface; the bed is a static collision
+    obstacle, NOT terminated on contact (only a fall = pelvis/torso contact ends the episode), so
+    the policy learns to work against the bedside, not avoid all contact."""
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -67,6 +73,21 @@ class BedReachSceneCfg(InteractiveSceneCfg):
     )
 
     robot = make_bed_g1_cfg(prim_path="{ENV_REGEX_NS}/Robot")
+
+    # The bed (mattress) as a static collision obstacle directly in front of the robot: near face
+    # at x≈0.20 (just ahead of the feet), top at z=0.66, wide in y so lateral reaches stay over it.
+    bed = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Bed",
+        spawn=sim_utils.CuboidCfg(
+            size=(1.4, 2.4, 0.66),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=0.6, dynamic_friction=0.6, restitution=0.0
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.42, 0.30, 0.22)),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.90, 0.0, 0.33)),
+    )
 
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
 
@@ -96,11 +117,20 @@ class CommandsCfg:
         resampling_time_range=(3.0, 5.0),
         debug_vis=True,
         ranges=mdp.UniformPoseCommandCfg.Ranges(
-            # base frame: +x forward, +y left, +z up (pelvis-local). Forward + below pelvis
-            # spans easy (near, ~pelvis height) to hard (far forward, low = deep bed lean).
-            pos_x=(0.15, 0.50),
-            pos_y=(-0.35, 0.10),
-            pos_z=(-0.45, 0.05),
+            # base frame: +x forward, +y left, +z up (pelvis-local). Forward + below pelvis,
+            # spanning easy (near, ~pelvis height) to hard (far forward, low = deep bed lean).
+            # pos_y spans BOTH sides so the policy learns to sweep the hand laterally too — that
+            # is the headward DRAG of the bed-making pull (in the robot's base frame the
+            # headward direction is sideways), kept in-domain so a deployed reach→drag never
+            # leaves the trained cone. pos_z reaches a touch above pelvis (raise the cover) and
+            # well below (deep lean).
+            # On/above the bed SURFACE (the bed obstacle blocks anything lower): forward onto the
+            # near part of the bed, both lateral sides (the headward drag is sideways in the base
+            # frame), and from just below the cover to a bit above (raise/spread). Deeper/lower
+            # targets are physically unreachable through the mattress, so we don't sample them.
+            pos_x=(0.18, 0.55),
+            pos_y=(-0.40, 0.40),
+            pos_z=(-0.16, 0.10),
             roll=(0.0, 0.0),
             pitch=(0.0, 0.0),
             yaw=(0.0, 0.0),
@@ -155,7 +185,13 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2), "yaw": (-3.14, 3.14)},
+            # No xy spawn offset: the base spawns AT the env origin, which is the anchor the
+            # station-keeping reward (base_xy_anchor_l2) measures drift from. Yaw noise is now
+            # SMALL (±15°) because the bed is a fixed obstacle in front (+x): the robot must face
+            # it, the way it faces the bed at the bedside. (Full yaw-invariance is unnecessary
+            # here — at deploy the robot always squares up to the bed; ±15° gives orientation
+            # robustness without letting the bed fall outside the reach direction.)
+            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (-0.26, 0.26)},
             "velocity_range": {
                 "x": (-0.2, 0.2),
                 "y": (-0.2, 0.2),
@@ -180,6 +216,21 @@ class EventCfg:
         mode="interval",
         interval_range_s=(4.0, 7.0),
         params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
+    )
+
+    # Grip-slip / sheet-tension load on the reaching hand: a random horizontal force that toggles
+    # on and OFF every 1-2.5 s (slip_prob of the time it's zero). The on↔off steps are sudden load
+    # changes the policy must absorb without toppling — "don't fall when the sheet slips or you let
+    # go." (Force-adaptive whole-body control, FALCON / Isaac Lab 2.3 force-disturbance curriculum.)
+    ee_load = EventTerm(
+        func=randomize_ee_load,
+        mode="interval",
+        interval_range_s=(1.0, 2.5),
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=REACH_BODY),
+            "force_range": (0.0, 35.0),
+            "slip_prob": 0.4,
+        },
     )
 
 
@@ -213,6 +264,16 @@ class RewardsCfg:
     # -- balance / staying alive (the hard part: hold balance through the lean)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     upright = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    # Stay PLANTED: penalize the base drifting (xy) off its spawn spot. This is THE fix for the
+    # deploy topple — without it the free base reaches forward by stepping BACKWARD, walking
+    # itself off a bedside stance and toppling. Quadratic, so a small lean shift (~0.1 m) is
+    # nearly free while a backward step (~0.5-1 m) is heavily penalized: the policy learns to
+    # reach + drag by leaning/squatting with its feet planted ("without losing balance").
+    base_anchor = RewTerm(
+        func=base_xy_anchor_l2,
+        weight=-2.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=PELVIS_BODY)},
+    )
     base_height = RewTerm(
         func=mdp.base_height_l2,
         weight=-0.5,
@@ -246,6 +307,19 @@ class RewardsCfg:
         func=mdp.joint_deviation_l1,
         weight=-0.05,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=WAIST_JOINTS)},
+    )
+    # Keep the UNUSED (left) arm natural: penalize it drifting from its at-side default. The reach
+    # tracks the RIGHT hand, so without this the policy contorts the idle left arm into an uncanny
+    # counter-balance pose. The weight is light — small counter-balancing motions are still free,
+    # only awkward bends are penalized. (The right/reaching arm is deliberately NOT constrained.)
+    joint_deviation_left_arm = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.2,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["left_shoulder_.*_joint", "left_elbow_joint", "left_wrist_.*_joint"]
+            )
+        },
     )
 
 

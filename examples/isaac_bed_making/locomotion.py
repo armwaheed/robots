@@ -456,3 +456,128 @@ class VelocityWalker:
     def stand(self):
         """A pure standing command (zero velocity → balance in place)."""
         return [0.0, 0.0, 0.0]
+
+
+# ── our own whole-body bed-reach policy (Isaac Lab RL, issue #2 RL session) ──
+# A free-base Inspire-hand G1 that BALANCES on its own two feet while leaning + squatting
+# to reach a commanded hand target — the loco-manipulation skill a *walking*-balance policy
+# can't hold (the deep bed-making lean throws the CoM past the feet, so a walking policy
+# step-recovers and topples). Trained in Isaac Lab (rl/bed_reach_env_cfg.py) with rsl_rl
+# PPO; deployed here via the exported TorchScript actor (rl/policy/policy.pt). Verified by
+# eye: the G1 squats/leans to forward+down targets without toppling (rl/eval/).
+#
+# Unlike VelocityWalker.legs_only, this ONE policy owns ALL 29 body joints — legs (balance)
+# AND waist + arms (reach). There is no separate arm controller: the policy reaches AND
+# balances in a single forward pass. The hand target is given in the robot's BASE frame (so
+# the policy is yaw-invariant), so the behavior layer hands us a WORLD point and we transform
+# it in with the robot's current root pose.
+#
+# Observation (151), term order = bed_reach_env_cfg.ObservationsCfg.PolicyCfg (concatenated):
+#   base_lin_vel(3) base_ang_vel(3) projected_gravity(3) hand_target(7 = base-frame pos+quat)
+#   joint_pos_rel(ALL 53 joints) joint_vel_rel(ALL 53) last_action(29)
+# (no per-term scaling — the env uses the raw mdp terms). Action = raw·0.5 + default_joint_pos,
+# applied to the 29 body joints in Isaac articulation order (matching the training
+# JointPositionAction). The exported actor has no obs normalization (agents.py sets it off),
+# so it's a pure obs→action MLP; loaded with torch.jit (verified obs 151 → action 29).
+BEDREACH_POLICY_PT = str(Path(__file__).with_name("rl") / "policy" / "policy.pt")
+BEDREACH_ACTION_SCALE = 0.5
+BEDREACH_EE_BODY = "right_wrist_yaw_link"
+# The base-frame command ranges the policy was TRAINED on (rl/bed_reach_env_cfg CommandsCfg).
+# At deploy we clamp the commanded target into this box: if the robot steps back off its spot,
+# the fixed world target would otherwise land OUTSIDE the trained reach cone (base_x > 0.5),
+# and the policy chases that out-of-distribution command by leaning harder — stepping back even
+# more, a runaway that walks it off its feet. Clamping keeps every command in-domain, so the
+# hand reaches only as far forward as the policy can balance (an honest physical limit) instead
+# of toppling. Pulled in slightly from the training edges for margin.
+BEDREACH_CMD_CLAMP = ((0.20, 0.53), (-0.38, 0.38), (-0.14, 0.08))  # (x_lo,x_hi),(y),(z) base frame
+# The 29 body joints the policy controls (legs + waist + arms; Inspire fingers excluded).
+# Mirrors rl/robot_cfg.BODY_JOINTS — find_joints resolves these to the SAME articulation-order
+# ids the training action used, so the policy's 29 outputs map 1:1.
+BEDREACH_BODY_JOINTS = [
+    ".*_hip_pitch_joint", ".*_hip_roll_joint", ".*_hip_yaw_joint", ".*_knee_joint",
+    ".*_ankle_pitch_joint", ".*_ankle_roll_joint",
+    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+    ".*_shoulder_pitch_joint", ".*_shoulder_roll_joint", ".*_shoulder_yaw_joint",
+    ".*_elbow_joint", ".*_wrist_roll_joint", ".*_wrist_pitch_joint", ".*_wrist_yaw_joint",
+]
+
+
+class BedReachPolicy:
+    """Drives one G1 with our whole-body bed-reach policy: it reaches a commanded WORLD hand
+    target while balancing on its own feet (no pin/teleport/freeze). Call :meth:`set_world_target`
+    to aim the right hand, then :meth:`act` once per control step (~50 Hz, every ``decimation``
+    sim steps). The exported actor is a stateless MLP, so the only per-robot state is the
+    ``last_action`` history term — hence one instance per robot."""
+
+    def __init__(self, robot, device: str, policy_path: Optional[str] = None):
+        import torch
+
+        self._torch = torch
+        self.robot = robot
+        self.device = device
+        self.policy = torch.jit.load(policy_path or BEDREACH_POLICY_PT, map_location=device)
+        self.policy.eval()
+        # 29 body joints in articulation order (default preserve_order=False → ascending ids,
+        # exactly as the training JointPositionAction resolved them).
+        self.body_ids, _ = robot.find_joints(BEDREACH_BODY_JOINTS)
+        bid, _ = robot.find_bodies([BEDREACH_EE_BODY])
+        self.ee_id = int(bid[0])
+        self.last_action = torch.zeros(len(self.body_ids), device=device)  # raw policy output (29)
+        self._target_w = None  # world-frame hand target (3,)
+        self._cmd_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)  # identity (training fixed rpy=0)
+
+    def reset(self) -> None:
+        self.last_action = self._torch.zeros(len(self.body_ids), device=self.device)
+
+    def set_world_target(self, xyz) -> None:
+        """Aim the right hand at a WORLD point (x, y, z). Transformed into the base frame
+        each step, so it stays correct as the robot leans/turns."""
+        self._target_w = self._torch.tensor(xyz, device=self.device, dtype=self._torch.float32)
+
+    def _hand_target_b(self):
+        """The 7-dim base-frame command [pos_b(3), quat(4)] the obs term expects. World target
+        → base frame via the inverse root rotation (the training command is defined relative to
+        the root: des_pos_w = root_pos_w + R(root_quat)·pos_b)."""
+        from isaaclab.utils.math import quat_rotate_inverse
+
+        torch = self._torch
+        d = self.robot.data
+        root_p = d.root_pos_w[0]
+        root_q = d.root_quat_w[0]
+        tgt = self._target_w if self._target_w is not None else root_p
+        pos_b = quat_rotate_inverse(root_q.unsqueeze(0), (tgt - root_p).unsqueeze(0))[0]
+        # Clamp into the trained command box so a receding base can't drive an out-of-distribution
+        # command (which the policy chases by leaning harder → steps back → runaway → topples).
+        (xlo, xhi), (ylo, yhi), (zlo, zhi) = BEDREACH_CMD_CLAMP
+        pos_b = torch.stack([pos_b[0].clamp(xlo, xhi), pos_b[1].clamp(ylo, yhi), pos_b[2].clamp(zlo, zhi)])
+        return torch.cat([pos_b, self._cmd_quat])
+
+    def _obs(self):
+        torch = self._torch
+        d = self.robot.data
+        base_lin = d.root_lin_vel_b[0]                       # (3)
+        base_ang = d.root_ang_vel_b[0]                       # (3)
+        grav = d.projected_gravity_b[0]                      # (3)
+        hand_t = self._hand_target_b()                       # (7)
+        jpr = d.joint_pos[0] - d.default_joint_pos[0]        # (53) ALL joints, articulation order
+        jvr = d.joint_vel[0] - d.default_joint_vel[0]        # (53)
+        return torch.cat([base_lin, base_ang, grav, hand_t, jpr, jvr, self.last_action]).unsqueeze(0)
+
+    def act(self) -> None:
+        """Run the policy once and set the 29 body-joint position targets. The policy owns the
+        whole body (legs balance, waist + arms reach), so this is the ONLY control call per step
+        — no separate balance()/arm controller."""
+        raw = self.policy(self._obs().float()).detach()[0]   # (29) raw action
+        self.last_action = raw
+        tgt = raw * BEDREACH_ACTION_SCALE + self.robot.data.default_joint_pos[0, self.body_ids]
+        self.robot.set_joint_position_target(tgt.unsqueeze(0), joint_ids=self.body_ids)
+
+    # ── helpers (mirror the walkers) ─────────────────────────────────────────────
+    def ee_pos(self):
+        """World position of the tracked right hand (``right_wrist_yaw_link`` origin)."""
+        p = self.robot.data.body_pose_w[0, self.ee_id, :3]
+        return float(p[0]), float(p[1]), float(p[2])
+
+    def base_xy(self):
+        p = self.robot.data.root_pos_w[0, :2]
+        return float(p[0]), float(p[1])
