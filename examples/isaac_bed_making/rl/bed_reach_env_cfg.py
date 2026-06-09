@@ -31,19 +31,31 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide as feet_slide_fn
-from isaaclab_tasks.manager_based.manipulation.reach.mdp import position_command_error, position_command_error_tanh
 
-from .mdp import base_xy_anchor_l2, randomize_ee_load
+from .mdp import (
+    base_xy_anchor_l2,
+    idle_arm_deviation_l1,
+    randomize_ee_load,
+    same_side_position_error,
+    same_side_position_error_tanh,
+)
 from .robot_cfg import (
     BODY_JOINTS,
     FOOT_BODIES,
+    LEFT_EE_BODY,
     PELVIS_BODY,
     RIGHT_EE_BODY,
     WAIST_JOINTS,
     make_bed_g1_cfg,
 )
 
+# Nominal command body (the target is a base-frame pose; the reward tracks whichever hand is on the
+# target's side, see HANDS).
 REACH_BODY = RIGHT_EE_BODY
+# Both hands in [right, left] order (preserve_order so the ambidextrous mdp terms see
+# body_ids[0]=right, body_ids[1]=left). The reach is solved with whichever hand is on the target's
+# side, so a sideways drag is a natural abduction rather than a cross-body sweep one hand can't hold.
+HANDS = SceneEntityCfg("robot", body_names=[RIGHT_EE_BODY, LEFT_EE_BODY], preserve_order=True)
 
 
 ##
@@ -117,17 +129,13 @@ class CommandsCfg:
         resampling_time_range=(3.0, 5.0),
         debug_vis=True,
         ranges=mdp.UniformPoseCommandCfg.Ranges(
-            # base frame: +x forward, +y left, +z up (pelvis-local). Forward + below pelvis,
-            # spanning easy (near, ~pelvis height) to hard (far forward, low = deep bed lean).
-            # pos_y spans BOTH sides so the policy learns to sweep the hand laterally too — that
-            # is the headward DRAG of the bed-making pull (in the robot's base frame the
-            # headward direction is sideways), kept in-domain so a deployed reach→drag never
-            # leaves the trained cone. pos_z reaches a touch above pelvis (raise the cover) and
-            # well below (deep lean).
-            # On/above the bed SURFACE (the bed obstacle blocks anything lower): forward onto the
-            # near part of the bed, both lateral sides (the headward drag is sideways in the base
-            # frame), and from just below the cover to a bit above (raise/spread). Deeper/lower
-            # targets are physically unreachable through the mattress, so we don't sample them.
+            # base frame: +x forward, +y left, +z up (pelvis-local). On/above the bed SURFACE (the
+            # bed obstacle blocks anything lower): forward onto the near part of the bed, BOTH
+            # lateral sides, and from just below the cover to a bit above (raise/spread). pos_y
+            # spanning both sides is what makes the reach ambidextrous — a +y (leftward) target is
+            # reached with the LEFT hand, a −y target with the RIGHT hand (see HANDS), so the
+            # headward drag (sideways in the base frame) is a natural abduction for whichever hand
+            # leads. Deeper/lower targets are unreachable through the mattress, so we don't sample.
             pos_x=(0.18, 0.55),
             pos_y=(-0.40, 0.40),
             pos_z=(-0.16, 0.10),
@@ -218,16 +226,17 @@ class EventCfg:
         params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
     )
 
-    # Grip-slip / sheet-tension load on the reaching hand: a random horizontal force that toggles
-    # on and OFF every 1-2.5 s (slip_prob of the time it's zero). The on↔off steps are sudden load
-    # changes the policy must absorb without toppling — "don't fall when the sheet slips or you let
-    # go." (Force-adaptive whole-body control, FALCON / Isaac Lab 2.3 force-disturbance curriculum.)
+    # Grip-slip / sheet-tension load on the ACTIVE (gripping) hand: a random horizontal force that
+    # toggles on and OFF every 1-2.5 s (slip_prob of the time it's zero). The on↔off steps are sudden
+    # load changes the policy must absorb without toppling — "don't fall when the sheet slips or you
+    # let go." (Force-adaptive whole-body control, FALCON / Isaac Lab 2.3 force-disturbance curriculum.)
     ee_load = EventTerm(
         func=randomize_ee_load,
         mode="interval",
         interval_range_s=(1.0, 2.5),
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=REACH_BODY),
+            "command_name": "hand_target",
+            "asset_cfg": HANDS,
             "force_range": (0.0, 35.0),
             "slip_prob": 0.4,
         },
@@ -236,29 +245,21 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    # -- task: reach the hand to the commanded target (coarse shaping + sharp bonus near it)
+    # -- task: reach the SAME-SIDE hand to the commanded target (coarse shaping + sharp bonus near it)
     reach_coarse = RewTerm(
-        func=position_command_error_tanh,
+        func=same_side_position_error_tanh,
         weight=2.0,
-        params={
-            "std": 0.20,
-            "command_name": "hand_target",
-            "asset_cfg": SceneEntityCfg("robot", body_names=REACH_BODY),
-        },
+        params={"std": 0.20, "command_name": "hand_target", "asset_cfg": HANDS},
     )
     reach_fine = RewTerm(
-        func=position_command_error_tanh,
+        func=same_side_position_error_tanh,
         weight=1.5,
-        params={
-            "std": 0.06,
-            "command_name": "hand_target",
-            "asset_cfg": SceneEntityCfg("robot", body_names=REACH_BODY),
-        },
+        params={"std": 0.06, "command_name": "hand_target", "asset_cfg": HANDS},
     )
     reach_l2 = RewTerm(
-        func=position_command_error,
+        func=same_side_position_error,
         weight=-0.3,
-        params={"command_name": "hand_target", "asset_cfg": SceneEntityCfg("robot", body_names=REACH_BODY)},
+        params={"command_name": "hand_target", "asset_cfg": HANDS},
     )
 
     # -- balance / staying alive (the hard part: hold balance through the lean)
@@ -308,17 +309,21 @@ class RewardsCfg:
         weight=-0.05,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=WAIST_JOINTS)},
     )
-    # Keep the UNUSED (left) arm natural: penalize it drifting from its at-side default. The reach
-    # tracks the RIGHT hand, so without this the policy contorts the idle left arm into an uncanny
-    # counter-balance pose. The weight is light — small counter-balancing motions are still free,
-    # only awkward bends are penalized. (The right/reaching arm is deliberately NOT constrained.)
-    joint_deviation_left_arm = RewTerm(
-        func=mdp.joint_deviation_l1,
+    # Keep the IDLE arm (whichever one is NOT reaching) natural: penalize it drifting from its
+    # at-side default so it hangs instead of contorting into an uncanny counter-pose. The active
+    # (same-side as the target) arm is deliberately free. Light weight — small counter-balancing is
+    # still free, only awkward bends are penalized.
+    idle_arm = RewTerm(
+        func=idle_arm_deviation_l1,
         weight=-0.2,
         params={
-            "asset_cfg": SceneEntityCfg(
+            "command_name": "hand_target",
+            "right_arm_cfg": SceneEntityCfg(
+                "robot", joint_names=["right_shoulder_.*_joint", "right_elbow_joint", "right_wrist_.*_joint"]
+            ),
+            "left_arm_cfg": SceneEntityCfg(
                 "robot", joint_names=["left_shoulder_.*_joint", "left_elbow_joint", "left_wrist_.*_joint"]
-            )
+            ),
         },
     )
 

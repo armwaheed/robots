@@ -66,22 +66,28 @@ ROBOT_Z = 0.80      # spawn pelvis height: the velocity-walk policy's natural st
                     # through the floor at spawn and the policy couldn't recover.
 STAND_PELVIS_Z = 0.80  # clean upright standing pelvis height for manipulation (feet on floor)
 MANIP_X = 0.05      # flank the bed near mid-side, within reach of the head-side corners
-APPROACH_Y = 2.60   # spawn here, ~1.6 m out from the bedside mark, so the G1s actually
-                    # WALK in under the policy (not teleport). ~0.9 m off the y=+/-0.9 bed side.
 MANIP_Y = 1.05      # walk-in target at the bedside (just off the y=+/-0.9 bed side)
+APPROACH_Y = MANIP_Y + 1.0  # spawn ~1 m out from the bedside mark, so the G1s WALK in under the
+                            # policy (not teleport); the walk doubles as the sheet's drape time.
 ROBOTS = {
     0: {"approach": (MANIP_X, -APPROACH_Y, ROBOT_Z), "manip": (MANIP_X, -MANIP_Y),
         "yaw_deg": 90.0, "side": "-y"},
     1: {"approach": (MANIP_X, APPROACH_Y, ROBOT_Z), "manip": (MANIP_X, MANIP_Y),
         "yaw_deg": -90.0, "side": "+y"},
 }
-# Bent-knee standing default the rl_gym walk policy expects (its output is an
-# offset from this pose); this matches RLGYM_DEFAULT_ANGLES. Unmatched joints
-# (arms/waist/fingers) default to 0.
+# Spawn / default stance for the demo G1s. Bent-knee legs (the rl_gym/velocity walk default, an
+# offset from this pose). Arms at the G1's natural AT-SIDES pose — the same pose the velocity-walk
+# policy holds (locomotion.VEL_DEFAULT_POS) and the bed-reach policy trains with (rl.robot_cfg
+# DEFAULT_JOINT_POS) — so the robot's observation neutral matches the trained policy and the
+# walk→reach handoff lands in-distribution. (These two dicts must stay in sync.)
 WALK_DEFAULT_JOINTS = {
     ".*_hip_pitch_joint": -0.10,
     ".*_knee_joint": 0.30,
     ".*_ankle_pitch_joint": -0.20,
+    "left_shoulder_pitch_joint": 0.30, "right_shoulder_pitch_joint": 0.30,
+    "left_shoulder_roll_joint": 0.25, "right_shoulder_roll_joint": -0.25,
+    "left_elbow_joint": 0.97, "right_elbow_joint": 0.97,
+    "left_wrist_roll_joint": 0.15, "right_wrist_roll_joint": -0.15,
 }
 
 # Bed corners in the world (compass labels match the swarm driver). +x=foot/East.
@@ -108,7 +114,7 @@ BED_CORNERS: Dict[str, Tuple[float, float, float]] = {
 # half. Pulling the flat head edge toward the head UNSPOOLS that slack rather than
 # dragging a sheet stuck flat to the mattress — so the friction grip suffices and the
 # robots aren't yanked over. See cloth.build_bedsheet's accordion_* args.
-SHEET_SIZE = (1.3, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26)
+SHEET_SIZE = (1.3, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26 incl. side overhang)
 # MuJoCo recipe (issue #2, 2026-06-06): COARSE + FEATHERLIGHT + THICK is what made the
 # MuJoCo flex sheet look good and hang still — not "triangles". MuJoCo used 143 verts /
 # 0.18 kg / ~4.4 cm. Match it: a coarse grid (with cloth.py's light particle_mass this
@@ -234,14 +240,14 @@ def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
         # too slick and the foot-draped cover slides off on its own — 0.4 holds it.)
         bed = static_box(BED_SIZE, BED_CENTER, (0.42, 0.30, 0.22), friction=0.4, rounded=True).replace(
             prim_path="/World/Bed")
-        headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17), rounded=True).replace(
-            prim_path="/World/Headboard")
+        headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17),
+                               rounded=True).replace(prim_path="/World/Headboard")
         # Pillows are rounded colliders so the cover drapes OVER their tops (functional
         # pillows) instead of passing through them.
-        pillow_l = static_box(PILLOW_SIZE, PILLOWS["left"], (0.93, 0.93, 0.96), rounded=True).replace(
-            prim_path="/World/PillowL")
-        pillow_r = static_box(PILLOW_SIZE, PILLOWS["right"], (0.93, 0.93, 0.96), rounded=True).replace(
-            prim_path="/World/PillowR")
+        pillow_l = static_box(PILLOW_SIZE, PILLOWS["left"], (0.93, 0.93, 0.96),
+                              rounded=True).replace(prim_path="/World/PillowL")
+        pillow_r = static_box(PILLOW_SIZE, PILLOWS["right"], (0.93, 0.93, 0.96),
+                              rounded=True).replace(prim_path="/World/PillowR")
         robot_0 = walker(0)
         robot_1 = walker(1)
 

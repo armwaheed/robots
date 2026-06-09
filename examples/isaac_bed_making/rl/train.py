@@ -19,6 +19,8 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of parall
 parser.add_argument("--max_iterations", type=int, default=None, help="PPO iterations.")
 parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 parser.add_argument("--run_name", type=str, default="", help="Suffix for the run directory.")
+parser.add_argument("--resume_from", type=str, default=None,
+                    help="Warm-start: load this model_*.pt checkpoint before training (continue/fine-tune).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -74,6 +76,9 @@ def main():
 
     print_dict(agent_cfg.to_dict(), nesting=0)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    if args_cli.resume_from is not None:
+        print(f"[bed-reach] warm-starting from checkpoint: {args_cli.resume_from}")
+        runner.load(args_cli.resume_from)
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     # Export the final policy for deployment in the demo.

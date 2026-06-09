@@ -18,14 +18,15 @@ against it — to reach a target on the mattress, balancing entirely on its own 
 teleporting, no joint freezing). "Free base" = the robot is **not** bolted to the world; it has to keep
 itself upright, exactly like the real hardware.*
 
-**🎬 Policy video (current iteration):** [`media/rl/bed_pull_policy.mp4`](media/rl/bed_pull_policy.mp4)
+**🎬 Policy video (current iteration — ambidextrous):** [`media/rl/ambidextrous_eval.mp4`](media/rl/ambidextrous_eval.mp4)
 &nbsp;•&nbsp; **Deployable policy (committed):** [`rl/policy/policy.onnx`](rl/policy/policy.onnx) · [`rl/policy/policy.pt`](rl/policy/policy.pt)
 
-> **Status — read this first.** The policy is **verified in isolation** (clean, eye-checked video above).
-> Wiring it into the **full two-G1 demo** with the real cloth sheet is **in progress**: one robot already
-> reaches and grips the sheet *while staying planted*, but the sustained pull-load and an asymmetric fall
-> are the next iteration ([§7](#7-status--whats-next)). **This is a living document** — it tracks the
-> policy as it evolves and will be updated at the next step.
+> **Status — read this first.** The policy is now **ambidextrous** (iteration 3): each robot reaches with
+> the hand on the target's side, so the headward sheet-drag is a natural same-side motion, not the
+> cross-body sweep that toppled a robot before. **Verified in isolation** (eye-checked: both-handed,
+> balanced, no topple). In the **full two-G1 demo** the robots now **walk in arms-at-their-sides and the
+> full-overhang sheet drapes during the walk**; the last gap is the **walk→reach handoff**, being closed by
+> a warm-start retrain ([§8](#8-status--whats-next)). **This is a living document.**
 
 ---
 
@@ -41,7 +42,7 @@ theory.
 That doesn't mean it was easy. Two things took genuine systems problem-solving:
 - **We solved an open NVIDIA problem.** The 5-finger Inspire-hand G1 can't be given a free (mobile)
   base by the documented switch — and NVIDIA's own forum thread on exactly this is **unanswered**. We
-  found a reusable fix (a tiny override USD; [§6](#6-the-research--resources-we-reused)).
+  found a reusable fix (a tiny override USD; [§7](#7-the-research--resources-we-reused)).
 - **We deployed an Isaac Lab policy *outside* its training env** — reverse-engineering the exact 151-D
   observation and action mapping so the policy runs inside the two-robot demo, not just the RL harness.
 
@@ -96,13 +97,13 @@ balance *and* reach at once, so the reach never becomes a fall.
 
 ---
 
-## 3. The policy, in two iterations
+## 3. The policy, in three iterations
 
 ```mermaid
 flowchart LR
     V1["Iteration 1<br/>free-space reach<br/>✓ balances while reaching<br/>✗ walks off its spot beside a bed"]
-    V2["Iteration 2 — now<br/>planted bed-pull<br/>+ station-keeping + bed obstacle<br/>+ grip-slip load<br/>✓ reaches planted, holds the load"]
-    V3["Next<br/>working two-G1 bed-making<br/>+ behaviour-layer release-on-resistance"]
+    V2["Iteration 2<br/>planted bed-pull<br/>+ station-keeping + bed obstacle<br/>+ grip-slip load<br/>✓ reaches planted, holds the load"]
+    V3["Iteration 3 — now<br/>ambidextrous<br/>leads with its same-side hand<br/>✓ headward drag is a natural motion,<br/>no cross-body topple"]
     V1 --> V2 --> V3
 ```
 
@@ -134,6 +135,33 @@ The current policy keeps the same balance-while-reach core and adds exactly what
 | **Wider reach + drag workspace** | Targets span forward **and both lateral sides** → the planted policy can reach *and drag headward* in any needed direction. | — |
 | **Natural idle-arm** regularizer | Keeps the non-reaching arm from contorting into an uncanny counter-balance (small counter-motions still allowed). | standard posture regularization |
 
+### 3.3 Iteration 3 — *ambidextrous* (current policy)
+
+Wired into the two-G1 demo, iteration 2 exposed one more gap. The robots flank **opposite** sides of the
+bed, so when both pull the sheet *headward* with the **same** (right) hand, one does a natural outward
+sweep while its mirror does an awkward **cross-body** sweep — and the cross-body robot topples.
+
+The fix is **ambidexterity**, applied straight from the robot's **bilateral symmetry** (*SYMDEX*,
+[arXiv 2505.05287](https://arxiv.org/abs/2505.05287)): the policy reaches with **whichever hand is on the
+target's side**. Implemented as *same-side* reward, idle-arm and force terms that read the active hand from
+the command's lateral sign — so it needs **no change to the 151-D observation**; the deployed policy stays
+a drop-in. Now each robot leads with its natural same-side hand and the headward drag is a clean abduction
+for both. **Eye-verified in isolation: it reaches targets on both sides, balanced and leaning over the
+bed, no topple.**
+
+| Reach over the bedside | Lateral reach (the drag) |
+|---|---|
+| ![](media/rl/ambidextrous_reach.png) | ![](media/rl/ambidextrous_lateral.png) |
+
+🎬 **[`media/rl/ambidextrous_eval.mp4`](media/rl/ambidextrous_eval.mp4)** — both-handed, balanced, no topple.
+
+In the **full demo** the robots now **spawn ~1 m out and walk to the bedside with their arms at their
+sides** (the canonical Unitree stance — see [§6](#6-closing-the-real-to-sim-gap-with-robotics-connect)),
+and the **full 9-inch-overhang sheet drapes during the walk** so its overhang folds down off the bed edges
+instead of dumping on their arms — both stand through settle, reach and grip. The last gap is the
+**walk→reach handoff** (the reach policy's neutral must match the at-sides walk pose), being closed by a
+**warm-start retrain** that re-centres the reach policy on that same neutral ([§8](#8-status--whats-next)).
+
 ---
 
 ## 4. Result (eye-verified, current policy)
@@ -156,11 +184,11 @@ additions.)*
 ![Iteration-1 training convergence](media/rl/convergence.png)
 
 > **Honest caveats — and why they're here.** ~6 cm is *near*, not pinpoint. And this is the **policy in
-> isolation.** In the full two-G1 demo with the real particle-cloth sheet, one robot already reaches and
-> grips the sheet *while staying planted* (the fix working in context), but the **sustained** pull against
-> the cloth still over-loads the policy and one robot falls asymmetrically. Those are the next iteration
-> ([§7](#7-status--whats-next)). We surface this on purpose: engineers should trust a result more, not
-> less, when its limits are stated plainly.
+> isolation.** In the full two-G1 demo the robots walk in arms-at-their-sides, the full-overhang sheet
+> drapes during the walk, and both reach and grip the real particle-cloth sheet while staying planted; the
+> remaining gaps are the **walk→reach handoff** (a warm-start retrain in flight) and the **sustained**
+> pull-load ([§8](#8-status--whats-next)). We surface this on purpose: engineers should trust a result
+> more, not less, when its limits are stated plainly.
 
 ---
 
@@ -190,7 +218,57 @@ balance policy would make it intractable and brittle.
 
 ---
 
-## 6. The research & resources we reused
+## 6. Closing the real-to-sim gap with robotics-connect
+
+Training in simulation only transfers to hardware if the **simulated robot matches the real one** — and a
+simulator, however good, **does not fully expose a real robot's sensor and effector envelope.** Isaac Sim
+hands you idealized cameras and ray-casts; the *actual* G1's sensors are tilted, range-limited, and
+**occluded by the robot's own body** in ways the sim will never tell you. Bridging that is **real-to-sim**:
+measure the hardware, then build the sim to match — the loop that *feeds* sim-to-real.
+
+We close it with **[robotics-connect](https://github.com/armwaheed/robotics-connect)** — Arm's Unitree G1
+EDU control stack, where each sensor and effector is **characterized on the physical robot.** That
+on-hardware characterization is **calibration data an AI agent can build the simulator from**, and it pays
+off twice.
+
+**1. It calibrates the simulated sensors to the real ones.** Two measurements that a sim would otherwise
+make you guess:
+
+- **RGB camera angle + viewing distance.** `depth_camera_sight` calibrates the head Intel RealSense's
+  downward tilt **on the dev robot to 51.29°** (a floor-plane fit), and documents the hard constraint that
+  at that pitch it sees the floor and the near bed but **not** the broader room — while a mattress edge is
+  still resolvable **2–3 m out** in the upper frame. Our simulated head camera is set to **exactly 51.29°**
+  *because of that measurement*, not a guess.
+- **LiDAR near-field fidelity + self-occlusion.** `lidar_sight` characterizes the crown **Livox MID-360**:
+  a table surface reads cleanly at **0.4 m forward / −0.05 m down (≈ −7° elevation)** — near-field
+  detection works, a 0.66 m bed is seen up close — while the robot's **own face-frame blanks ±40–45° of
+  azimuth** and its **chin blanks everything below −10° elevation**. Our simulated LiDAR (an Isaac
+  `RayCaster`) reproduces **those exact blind spots**, so a bed-detector that works in sim works on the
+  robot. *(Full-fidelity RTX-Livox replay is neither affordable nor the point — the real device is already
+  characterized on hardware; the sim only needs to share its blind spots.)*
+
+Without this an agent guesses the camera angle and assumes an unobstructed LiDAR — and sim-trained
+perception silently fails on the real robot. The measurement comes from the **hardware**; the **sim is
+built to match it** (the bed perception lives in [`perception.py`](perception.py)).
+
+**2. It cuts RL training cycles by getting the rewards and constraints right up front.** Knowing what the
+*real* hardware and task demand lets the agent encode the correct rewards and constraints on the first
+pass, instead of discovering them by burning training runs:
+
+- the **at-sides arm neutral** is taken straight from the **real Unitree walking policy's own default
+  pose** — so the trained reach policy's neutral matches the deploy stance and the walk→reach handoff lands
+  in-distribution (no training cycles wasted on a mismatched pose);
+- the **grip-slip / sheet-tension force** model and the **bed-as-obstacle** constraint reflect what the
+  real bedside reach actually involves;
+- the **sensor placement** (head-cam down-tilt, crown LiDAR) is fixed before training, not retrofitted.
+
+Each is a constraint the agent would otherwise have to *find* the hard way. robotics-connect turns
+"characterize it on the robot once" into **fewer, better-aimed training runs** — real-to-sim feeding
+sim-to-real.
+
+---
+
+## 7. The research & resources we reused
 
 The heart of the engineering approach: **almost nothing here was invented — it was found and applied.**
 
@@ -237,20 +315,27 @@ The heart of the engineering approach: **almost nothing here was invented — it
 
 ---
 
-## 7. Status & what's next
+## 8. Status & what's next
 
-**Done:** balance-while-reach learned (it.1) → **planted bedside reach + grip-slip robustness** (it.2,
-eye-verified in isolation). Policy committed at [`rl/policy/`](rl/policy/).
+**Done:** balance-while-reach (it.1) → planted bedside reach + grip-slip robustness (it.2) →
+**ambidextrous same-side reach** (it.3, eye-verified in isolation: both-handed, balanced, no topple). In
+the full demo the robots **walk in arms-at-their-sides and the full 9-inch-overhang sheet drapes during
+the walk** without toppling them; both stand through settle, reach and grip. Policy committed at
+[`rl/policy/`](rl/policy/).
 
-**In progress — wiring into the two-G1 demo:** one robot already reaches and grips the real
-particle-cloth sheet *while staying planted*; remaining gaps for the next iteration:
-1. **Pull topple** — the real sheet is a *sustained, motion-opposing* load, harder than the training's
-   *random* toggling force. Next: a **behaviour-layer "release if resistance is too high → retry / ask a
-   peer for help"** (the decision belongs above the balance policy), and/or retrain the load to oppose the
-   drag direction.
-2. **Asymmetric fall** — one robot holds, its mirror falls; debug the bedside-specific cause.
+**In progress:**
+1. **Walk→reach handoff** — the walk hands off the at-sides pose; the reach policy's neutral must match it.
+   Being closed by a **warm-start retrain** that re-centres the reach policy on the same at-sides neutral,
+   so one pose serves both the walk and the reach — a seamless handoff.
+2. **Sustained pull-load** — the real sheet is a *sustained, motion-opposing* load, harder than the
+   training's *random* toggling force. Next: a **behaviour-layer "release if resistance is too high →
+   retry / ask a peer"** (the decision belongs above the balance policy), and/or retrain the load to
+   oppose the drag direction.
+3. **Wire the perception layer** — the robotics-connect-calibrated LiDAR/RGB
+   ([§6](#6-closing-the-real-to-sim-gap-with-robotics-connect)) into the demo's *detect → approach →
+   switch* behaviour layer.
 
-**This document will be updated** at the next iteration toward a fully working bed-making policy.
+**This is a living document** — updated as the policy evolves toward a fully working bed-making system.
 
 ---
 

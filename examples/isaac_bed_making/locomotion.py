@@ -373,6 +373,8 @@ class VelocityWalker:
         legset = set(int(j) for j in self.leg_ids)
         self._leg_cols = [k for k, j in enumerate(self.joint_ids) if int(j) in legset]
         self._leg_apply_ids = [int(self.joint_ids[k]) for k in self._leg_cols]
+        # The policy's default pose IS the real G1's natural standing/walking stance — arms at the
+        # sides (shoulder_pitch 0.3, roll ±0.25, a relaxed elbow), the canonical Unitree pose.
         self.default = torch.tensor(VEL_DEFAULT_POS, device=device)        # (29,) Isaac order
         self.ang_scale = VEL_ANG_VEL_SCALE
         self.dof_vel_scale = VEL_DOF_VEL_SCALE
@@ -481,7 +483,10 @@ class VelocityWalker:
 # so it's a pure obs→action MLP; loaded with torch.jit (verified obs 151 → action 29).
 BEDREACH_POLICY_PT = str(Path(__file__).with_name("rl") / "policy" / "policy.pt")
 BEDREACH_ACTION_SCALE = 0.5
-BEDREACH_EE_BODY = "right_wrist_yaw_link"
+# The policy is ambidextrous: it reaches with whichever hand is on the target's side (left for a
+# +y target, right for −y). We resolve both wrists and pick the active one from the live command.
+BEDREACH_RIGHT_EE_BODY = "right_wrist_yaw_link"
+BEDREACH_LEFT_EE_BODY = "left_wrist_yaw_link"
 # The base-frame command ranges the policy was TRAINED on (rl/bed_reach_env_cfg CommandsCfg).
 # At deploy we clamp the commanded target into this box: if the robot steps back off its spot,
 # the fixed world target would otherwise land OUTSIDE the trained reach cone (base_x > 0.5),
@@ -504,10 +509,10 @@ BEDREACH_BODY_JOINTS = [
 
 class BedReachPolicy:
     """Drives one G1 with our whole-body bed-reach policy: it reaches a commanded WORLD hand
-    target while balancing on its own feet (no pin/teleport/freeze). Call :meth:`set_world_target`
-    to aim the right hand, then :meth:`act` once per control step (~50 Hz, every ``decimation``
-    sim steps). The exported actor is a stateless MLP, so the only per-robot state is the
-    ``last_action`` history term — hence one instance per robot."""
+    target while balancing on its own feet (no pin/teleport/freeze), with whichever hand is on the
+    target's side (ambidextrous). Call :meth:`set_world_target` to aim it, then :meth:`act` once per
+    control step (~50 Hz, every ``decimation`` sim steps). The exported actor is a stateless MLP, so
+    the only per-robot state is the ``last_action`` history term — hence one instance per robot."""
 
     def __init__(self, robot, device: str, policy_path: Optional[str] = None):
         import torch
@@ -520,8 +525,9 @@ class BedReachPolicy:
         # 29 body joints in articulation order (default preserve_order=False → ascending ids,
         # exactly as the training JointPositionAction resolved them).
         self.body_ids, _ = robot.find_joints(BEDREACH_BODY_JOINTS)
-        bid, _ = robot.find_bodies([BEDREACH_EE_BODY])
-        self.ee_id = int(bid[0])
+        rid, _ = robot.find_bodies([BEDREACH_RIGHT_EE_BODY])
+        lid, _ = robot.find_bodies([BEDREACH_LEFT_EE_BODY])
+        self.right_ee_id, self.left_ee_id = int(rid[0]), int(lid[0])
         self.last_action = torch.zeros(len(self.body_ids), device=device)  # raw policy output (29)
         self._target_w = None  # world-frame hand target (3,)
         self._cmd_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)  # identity (training fixed rpy=0)
@@ -530,8 +536,9 @@ class BedReachPolicy:
         self.last_action = self._torch.zeros(len(self.body_ids), device=self.device)
 
     def set_world_target(self, xyz) -> None:
-        """Aim the right hand at a WORLD point (x, y, z). Transformed into the base frame
-        each step, so it stays correct as the robot leans/turns."""
+        """Aim the reaching hand at a WORLD point (x, y, z). Transformed into the base frame each
+        step (so it stays correct as the robot leans/turns); the policy reaches with whichever hand
+        is on the target's side — aim it headward and each flanking robot uses its natural hand."""
         self._target_w = self._torch.tensor(xyz, device=self.device, dtype=self._torch.float32)
 
     def _hand_target_b(self):
@@ -572,10 +579,21 @@ class BedReachPolicy:
         tgt = raw * BEDREACH_ACTION_SCALE + self.robot.data.default_joint_pos[0, self.body_ids]
         self.robot.set_joint_position_target(tgt.unsqueeze(0), joint_ids=self.body_ids)
 
+    # ── ambidexterity helpers ────────────────────────────────────────────────────
+    def _active_is_left(self) -> bool:
+        """True when the policy is reaching with the LEFT hand — i.e. the commanded target is on
+        the robot's left (base +y). Read straight from the live (clamped) base-frame command."""
+        return bool(self._hand_target_b()[1] >= 0.0)
+
+    def active_wrist_link(self) -> str:
+        """The wrist link the active (same-side) hand uses — where the cloth grasp attaches."""
+        return BEDREACH_LEFT_EE_BODY if self._active_is_left() else BEDREACH_RIGHT_EE_BODY
+
     # ── helpers (mirror the walkers) ─────────────────────────────────────────────
     def ee_pos(self):
-        """World position of the tracked right hand (``right_wrist_yaw_link`` origin)."""
-        p = self.robot.data.body_pose_w[0, self.ee_id, :3]
+        """World position of the active (same-side) reaching hand."""
+        ee_id = self.left_ee_id if self._active_is_left() else self.right_ee_id
+        p = self.robot.data.body_pose_w[0, ee_id, :3]
         return float(p[0]), float(p[1]), float(p[2])
 
     def base_xy(self):

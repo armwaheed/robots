@@ -52,11 +52,18 @@ LEFT_EE_BODY = "left_wrist_yaw_link"
 PELVIS_BODY = "pelvis"
 FOOT_BODIES = ".*_ankle_roll_link"
 
-# Bent-knee standing default the lower body settles into (matches the demo's WALK_DEFAULT).
+# Standing stance the policy resets into + uses as its action/observation neutral (matches the
+# demo's scene.WALK_DEFAULT_JOINTS). Legs bent-knee; arms at the G1's natural AT-SIDES pose — the
+# same pose the velocity-walk policy holds (locomotion.VEL_DEFAULT_POS) — so the deployed walk→reach
+# handoff lands IN-DISTRIBUTION (no OOD launch) and the idle arm rests naturally at the side.
 DEFAULT_JOINT_POS = {
     ".*_hip_pitch_joint": -0.10,
     ".*_knee_joint": 0.30,
     ".*_ankle_pitch_joint": -0.20,
+    "left_shoulder_pitch_joint": 0.30, "right_shoulder_pitch_joint": 0.30,
+    "left_shoulder_roll_joint": 0.25, "right_shoulder_roll_joint": -0.25,
+    "left_elbow_joint": 0.97, "right_elbow_joint": 0.97,
+    "left_wrist_roll_joint": 0.15, "right_wrist_roll_joint": -0.15,
 }
 
 # Spawn height: pelvis ~0.78 m with bent knees plants the feet on the ground without
