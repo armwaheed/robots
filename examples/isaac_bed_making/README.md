@@ -99,6 +99,42 @@ NVIDIA's forums, *mesh* updates do cross Fabric (point‑instancer ones don't), 
 tensor cloth‑view) **into the Fabric mesh points** each render. Both the moving robot and the deforming
 sheet show at once.
 
+## View the robots on the Device Connect dashboard
+
+Run the demo with **`--broker`** and both G1s register live on the Arm Device Connect
+dashboard, each with its callable functions, event stream, and identity:
+
+![Device Connect dashboard: the bed-making G1 (beta-unitree-g1-humanoid-0, type unitree_g1_bed_making) online in the beta tenant with its callable RPCs, event stream, and Unitree G1 EDU identity](media/device_connect_dashboard.png)
+
+```bash
+cd ~/workspaces/git/IsaacLab
+export LD_PRELOAD="$LD_PRELOAD:/lib/aarch64-linux-gnu/libgomp.so.1"
+PYTHONUNBUFFERED=1 ./isaaclab.sh -p \
+    ~/workspaces/git/robots/examples/isaac_bed_making/demo.py --broker --gui --render
+```
+
+The demo defaults to **`--loopback`** (an offline, in-process bus) which does **not** read
+`.credentials/` and registers nothing, so the robots will **not** appear on the dashboard.
+**If the robots didn't show up on an earlier run, that run used the default `--loopback`
+instead of `--broker`** — only `--broker` uses the credentials.
+
+`--broker` reads the two JWT credential files in `.credentials/`
+(`beta-unitree-g1-humanoid-0.creds.json` and `beta-unitree-g1-humanoid-1.creds.json`) and
+registers both G1s on the real Device Connect NATS fabric
+(`nats://fabric.deviceconnect.dev:4222`; override with `--nats-url`). On the dashboard each
+peer shows its live status and the shared goal *"the bed is made,"* its callable functions
+(`pickUpBedSheet`, `walkToNextCorner`, `askForHelp`, `offerHelp`, `putDownBedSheet`,
+`getStatus`, `getGoalState`, `listPeers`, `getEventHistory`, `getHelpHistory`,
+`emergencyStopAll`), and the event/help stream that fills in as the peers claim corners and
+trade help during the run.
+
+**Timing for screenshots:** the peers are registered for the duration of the run (the
+walk-in and bed-making sequence, ~1-2 min), then they unregister cleanly on exit, so take
+screenshots while the demo is running. `--gui` opens the Isaac window too, so you can watch
+the robots and the dashboard side by side. (There is intentionally no standalone
+"register-and-hold" sidecar here — it would interfere with Device Connect's normal
+lifecycle; the swarm is driven only by the running demo.)
+
 ## Run it
 
 ```bash
