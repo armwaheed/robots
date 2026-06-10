@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from examples.unitree_g1_bed_making_g1_driver import (
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_g1_driver import (
     BedMakingG1Driver,
     SwarmAgent,
     SwarmState,
@@ -116,7 +116,7 @@ def test_sidecar_credentials_file_layout():
 def test_sidecar_runner_argument_resolution(tmp_path):
     """Verify the sidecar's argument parsing without launching the runtime."""
 
-    from examples import unitree_g1_bed_making_device_connect_sidecar as runner
+    from examples.mujoco_bed_making.bed_making_swarm import unitree_g1_bed_making_device_connect_sidecar as runner
 
     fake_creds = tmp_path / "fake.creds.json"
     fake_creds.write_text(json.dumps({"device_id": "fake-dev-1", "tenant": "demo"}))

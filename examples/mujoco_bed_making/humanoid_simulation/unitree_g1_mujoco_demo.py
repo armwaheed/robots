@@ -5,8 +5,8 @@ Creates a simple manipulation-style scene around the MuJoCo-backed G1 model:
 table, object, deterministic upper-body pose sequence, and rendered keyframes.
 
 Usage:
-    python3 examples/unitree_g1_mujoco_demo.py
-    python3 examples/unitree_g1_mujoco_demo.py --output-dir artifacts/g1_demo --width 1280 --height 720
+    python3 examples/mujoco_bed_making/humanoid_simulation/unitree_g1_mujoco_demo.py
+    python3 examples/mujoco_bed_making/humanoid_simulation/unitree_g1_mujoco_demo.py --output-dir artifacts/g1_demo --width 1280 --height 720
 """
 
 import argparse
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

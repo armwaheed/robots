@@ -5,7 +5,7 @@ Runs one ``DeviceRuntime`` per robot against the Device Connect NATS broker. The
 two runtimes share a single ``asyncio`` event loop. Each robot uses its own JWT
 credentials file and registers as an **equal swarm peer** exposing the
 bed-making swarm surface defined in
-``examples/unitree_g1_bed_making_g1_driver.py``:
+``examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_g1_driver.py``:
 
 - callable actions (``@rpc``): ``askForHelp`` / ``offerHelp`` /
   ``pickUpBedSheet`` / ``walkToNextCorner`` / ``putDownBedSheet`` plus
@@ -42,7 +42,7 @@ ask-for-help/offer-help between the peers, use
 
 Usage:
 
-    .venv/bin/python examples/unitree_g1_bed_making_device_connect_sidecar.py
+    .venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_device_connect_sidecar.py
 
 Override the broker URL with ``--nats-url`` or ``$DEVICE_CONNECT_NATS_URL``.
 """
@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -66,7 +66,7 @@ import threading  # noqa: E402
 
 from device_connect_edge import DeviceRuntime  # noqa: E402
 
-from examples.mujoco_bed_making.unitree_g1_bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
 
 DEFAULT_NATS_URL = "nats://fabric.deviceconnect.dev:4222"
 # Both G1s are equal swarm peers (no control/worker split) — the role label

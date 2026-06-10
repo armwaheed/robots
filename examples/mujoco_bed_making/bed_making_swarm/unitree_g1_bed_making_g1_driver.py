@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 GOAL_STATE = "the bed is made"
 
 # Sheet corners (A-D) map onto bed corners (compass labels). This mirrors the
-# placement plan in examples/unitree_g1_bed_making_demo.py.
+# placement plan in examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py.
 SHEET_CORNERS: Tuple[str, ...] = ("A", "B", "C", "D")
 SHEET_TO_BED: Dict[str, str] = {"A": "NW", "B": "NE", "C": "SE", "D": "SW"}
 

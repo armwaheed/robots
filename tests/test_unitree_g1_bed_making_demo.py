@@ -6,8 +6,8 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
-from examples import unitree_g1_bed_making_demo
-from examples.unitree_g1_bed_making_demo import (
+from examples.mujoco_bed_making.bed_making_demo import unitree_g1_bed_making_demo
+from examples.mujoco_bed_making.bed_making_demo.unitree_g1_bed_making_demo import (
     CONTROL_PREFIX,
     SHEET_GRID_X,
     SHEET_GRID_Y,

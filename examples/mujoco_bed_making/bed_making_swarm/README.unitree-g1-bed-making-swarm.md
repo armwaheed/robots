@@ -20,11 +20,11 @@ peer for help** or **offer help** to any peer that asks.
 
 The implementation lives in:
 
-- `examples/unitree_g1_bed_making_g1_driver.py` — the per-peer
+- `examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_g1_driver.py` — the per-peer
   Device Connect driver (`BedMakingG1Driver`) and its `SwarmAgent` state.
-- `examples/unitree_g1_bed_making_swarm_demo.py` — the AI-Fabric-orchestrated
+- `examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py` — the AI-Fabric-orchestrated
   demo that drives the swarm and exercises ask-for-help / offer-help.
-- `examples/unitree_g1_bed_making_device_connect_sidecar.py` — registers both
+- `examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_device_connect_sidecar.py` — registers both
   peers without running a scenario (for dashboard testing).
 
 ## Callable actions (functions in the dashboard)
@@ -87,7 +87,7 @@ Example help history after a run:
 
 ## Running the swarm demo
 
-`examples/unitree_g1_bed_making_swarm_demo.py` plays the role of the AI Fabric
+`examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py` plays the role of the AI Fabric
 orchestrator: it drives the bed-making sub-tasks via the callable actions and
 triggers an ask-for-help → offer-help exchange when a previously placed corner
 "starts to drift".
@@ -103,14 +103,14 @@ triggers an ask-for-help → offer-help exchange when a previously placed corner
 ```bash
 # Open the interactive MuJoCo viewer and watch the two G1s make the bed.
 # This also registers both peers on the Device Connect dashboard while it runs.
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --mujoco
 
 # Headless: render the run to PNG frames and encode artifacts/.../bed_making.mp4
 # (no window needed; uses GPU offscreen rendering).
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco --render-video
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --mujoco --render-video
 
 # Skip dashboard registration (pure local visualisation):
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --mujoco --no-device-connect
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --mujoco --no-device-connect
 ```
 
 `--mujoco` delegates to the companion visualisation
@@ -122,15 +122,15 @@ make-the-bed sequence — including the worker-assist "help" step — completes.
 
 ```bash
 # Live against the real Device Connect broker (both G1s appear in the dashboard):
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --broker
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --broker
 
 # Keep the peers online afterward so you can invoke their functions from the
 # dashboard yourself:
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --broker --hold 120
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --broker --hold 120
 
 # Offline (no broker) — coordinates via an in-process event bus, prints the
 # full event + help history at the end:
-.venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --loopback
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --loopback
 ```
 
 Defaults:
@@ -171,7 +171,7 @@ to:
 
 
 ```bash
-.venv/bin/python examples/unitree_g1_bed_making_device_connect_sidecar.py
+.venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_device_connect_sidecar.py
 ```
 
 Override credentials with `--credentials role=path` (repeatable).

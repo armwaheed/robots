@@ -69,7 +69,7 @@ Use the repo virtual environment:
 
 ```bash
 cd /Users/wahbro01/workspaces/git/robots
-.venv/bin/python examples/unitree_g1_bed_making_demo.py
+.venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py
 ```
 
 You do not need to export `STRANDS_ASSETS_DIR` for this demo. The script
@@ -81,19 +81,19 @@ The default run opens the MuJoCo passive viewer in an interactive Terminal
 session. PNG frame export is opt-in:
 
 ```bash
-.venv/bin/python examples/unitree_g1_bed_making_demo.py --render-frames
+.venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --render-frames
 ```
 
 Fast compile-only check:
 
 ```bash
-.venv/bin/python examples/unitree_g1_bed_making_demo.py --dry-run
+.venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --dry-run
 ```
 
 Headless or CI simulation without a viewer:
 
 ```bash
-.venv/bin/python examples/unitree_g1_bed_making_demo.py --no-viewer
+.venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --no-viewer
 ```
 
 ## Platform Notes
@@ -102,7 +102,7 @@ On macOS, MuJoCo frame rendering generally needs `mjpython` so Cocoa/GLFW can
 own the foreground app thread. From a normal Terminal session you can run:
 
 ```bash
-.venv/bin/mjpython examples/unitree_g1_bed_making_demo.py
+.venv/bin/mjpython examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py
 ```
 
 The script also tries to re-exec through `.venv/bin/mjpython` automatically
@@ -115,14 +115,14 @@ and select a MuJoCo GL backend:
 
 ```bash
 sudo apt-get install libosmesa6-dev
-MUJOCO_GL=osmesa .venv/bin/python examples/unitree_g1_bed_making_demo.py --no-viewer --render-frames
+MUJOCO_GL=osmesa .venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --no-viewer --render-frames
 ```
 
 GPU/EGL rendering can also work when EGL and the correct GPU driver libraries
 are installed:
 
 ```bash
-MUJOCO_GL=egl .venv/bin/python examples/unitree_g1_bed_making_demo.py --no-viewer --render-frames
+MUJOCO_GL=egl .venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --no-viewer --render-frames
 ```
 
 Outputs are written to:

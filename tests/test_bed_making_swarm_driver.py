@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-from examples.unitree_g1_bed_making_g1_driver import (
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_g1_driver import (
     GOAL_STATE,
     SHEET_TO_BED,
     BedMakingG1Driver,

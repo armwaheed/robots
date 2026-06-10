@@ -19,8 +19,8 @@ Physical realism choices:
 - Walking routes never traverse the bed footprint.
 
 Usage:
-    .venv/bin/python examples/unitree_g1_bed_making_demo.py
-    .venv/bin/python examples/unitree_g1_bed_making_demo.py --dry-run
+    .venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py
+    .venv/bin/python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --dry-run
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -1327,7 +1327,7 @@ def _render_troubleshooting_hint() -> str:
     if sys.platform == "darwin":
         return (
             "On macOS, render from a normal Terminal session with `.venv/bin/mjpython "
-            "examples/unitree_g1_bed_making_demo.py`, or run with `--no-render` in non-interactive shells."
+            "examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py`, or run with `--no-render` in non-interactive shells."
         )
     if sys.platform.startswith("linux"):
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
@@ -2181,7 +2181,7 @@ def _maybe_start_device_connect(args: argparse.Namespace):
     if args.no_device_connect:
         return None
     try:
-        from examples.mujoco_bed_making.unitree_g1_bed_making_device_connect_sidecar import (
+        from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_device_connect_sidecar import (
             BackgroundRuntime,
             default_specs,
         )
@@ -2192,7 +2192,7 @@ def _maybe_start_device_connect(args: argparse.Namespace):
     if not specs:
         print(
             "No Device Connect credentials found under .credentials/ — skipping. "
-            "Run examples/unitree_g1_bed_making_device_connect_sidecar.py with explicit "
+            "Run examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_device_connect_sidecar.py with explicit "
             "--credentials to register manually.",
             file=sys.stderr,
         )

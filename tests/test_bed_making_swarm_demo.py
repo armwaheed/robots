@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
-from examples.unitree_g1_bed_making_g1_driver import BedMakingG1Driver
-from examples.unitree_g1_bed_making_swarm_demo import (
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_g1_driver import BedMakingG1Driver
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_swarm_demo import (
     LoopbackBus,
     make_direct_invoker,
     run_scenario,

@@ -38,14 +38,14 @@ Two transports are supported:
 Usage::
 
     # Live dashboard (real broker, default):
-    .venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py
+    .venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py
 
     # Offline, no broker:
-    .venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --loopback
+    .venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --loopback
 
     # Keep the peers registered after the scenario so you can poke them from
     # the dashboard (broker mode only):
-    .venv/bin/python examples/unitree_g1_bed_making_swarm_demo.py --hold 120
+    .venv/bin/python examples/mujoco_bed_making/bed_making_swarm/unitree_g1_bed_making_swarm_demo.py --hold 120
 """
 
 from __future__ import annotations
@@ -62,11 +62,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.mujoco_bed_making.unitree_g1_bed_making_g1_driver import (  # noqa: E402
+from examples.mujoco_bed_making.bed_making_swarm.unitree_g1_bed_making_g1_driver import (  # noqa: E402
     GOAL_STATE,
     SHEET_TO_BED,
     BedMakingG1Driver,
@@ -345,7 +345,7 @@ def run_mujoco(args: argparse.Namespace) -> int:
     mp4 you can share.
     """
 
-    demo = REPO_ROOT / "examples" / "unitree_g1_bed_making_demo.py"
+    demo = REPO_ROOT / "examples" / "mujoco_bed_making" / "bed_making_demo" / "unitree_g1_bed_making_demo.py"
     cmd = [sys.executable, str(demo), "--substeps", str(args.substeps)]
     env = dict(os.environ)
     if args.no_device_connect:

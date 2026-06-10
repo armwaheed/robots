@@ -141,8 +141,8 @@ Important:
 
 ### New demo entry points
 
-- `examples/unitree_g1_mujoco_demo.py`
-- `examples/unitree_g1_interactive.py`
+- `examples/mujoco_bed_making/humanoid_simulation/unitree_g1_mujoco_demo.py`
+- `examples/mujoco_bed_making/humanoid_simulation/unitree_g1_interactive.py`
 
 `unitree_g1_mujoco_demo.py`:
 
@@ -257,7 +257,7 @@ interactive script to a real policy provider, for example:
 The script is already structured so the provider can be changed with:
 
 ```bash
-python examples/unitree_g1_interactive.py --policy <provider>
+python examples/mujoco_bed_making/humanoid_simulation/unitree_g1_interactive.py --policy <provider>
 ```
 
 ### 4. Revisit official Unitree assets
