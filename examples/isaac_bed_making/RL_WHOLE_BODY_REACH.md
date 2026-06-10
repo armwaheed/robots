@@ -7,9 +7,10 @@
 > *Loco-manipulation = moving and manipulating at the same time. The hard part isn't the reach or the
 > balance alone — it's holding both **together** when the reach pulls the robot off balance.*
 >
-> Just as important as the robot: **how it was built.** This is an *engineering* project — the goal was
-> to **apply** existing robot-learning research to one concrete problem, not to invent a new method.
-> See [§1](#1-the-engineering-approach).
+> Just as important as the robot: **how it was built.** It applies the field's best robot-learning
+> research where it exists — and does real engineering on the genuinely open problems where it doesn't
+> (a free-base Inspire-hand G1, an out-of-env *ambidextrous* deployment, a real-to-sim sensing method).
+> See [§1](#1-how-it-was-built).
 
 ![Planted reach over the bed](media/rl/bed_pull_reach.png)
 
@@ -30,26 +31,29 @@ itself upright, exactly like the real hardware.*
 
 ---
 
-## 1. The engineering approach
+## 1. How it was built
 
-There are two ways to attack a hard robotics problem. A **researcher** asks *"what new method could
-solve this?"* and sets out to discover one. An **engineer** asks *"whose already-solved pieces can I
-assemble into a working system for my problem?"* — and treats inventing something novel as a last
-resort, not a first move. **This project is deliberately the engineer's path**, and that is a choice
-worth defending: most of applied physical AI is *integration under real-world constraints*, not new
-theory.
+The fastest path through a hard robotics problem is to **stand on the field's best work** — most of
+applied physical AI is *integration under real-world constraints*, not new theory. So the spine of this
+system is reused, deliberately: the balance-while-reach formulation rides **Isaac Lab's locomotion RL
+rails** and the **PPO** recipe; the grip-slip robustness is **FALCON**-style force-adaptive whole-body
+control; the *learn-to-reach-then-add-force* curriculum is **NVIDIA's Isaac Lab 2.3** pattern; the
+ambidexterity is **morphological symmetry** (SYMDEX). *(PPO = the standard RL training algorithm.)*
 
-That doesn't mean it was easy. Two things took genuine systems problem-solving:
-- **We solved an open NVIDIA problem.** The 5-finger Inspire-hand G1 can't be given a free (mobile)
-  base by the documented switch — and NVIDIA's own forum thread on exactly this is **unanswered**. We
-  found a reusable fix (a tiny override USD; [§7](#7-the-research--resources-we-reused)).
-- **We deployed an Isaac Lab policy *outside* its training env** — reverse-engineering the exact 151-D
-  observation and action mapping so the policy runs inside the two-robot demo, not just the RL harness.
+But "apply, don't reinvent" is the default, not a limit — and three pieces here had no shelf solution,
+so we built them:
+- **An open NVIDIA problem, solved.** The 5-finger Inspire-hand G1 can't be given a free (mobile) base by
+  the documented switch, and NVIDIA's own forum thread on exactly this is **unanswered**. We found a
+  reusable fix (a tiny override USD; [§7](#7-the-research--resources-we-reused)).
+- **An Isaac Lab policy deployed *outside* its training env** — reverse-engineering the exact 151-D
+  observation + action map so it runs in the two-robot demo, and making it **ambidextrous with no
+  observation change** (the same-side trick) so two flanking robots both pull naturally.
+- **A real-to-sim method.** Isaac Sim doesn't expose a real robot's sensor/effector envelope, so
+  on-hardware sensor characterization (**robotics-connect**) calibrates the sim *and* cuts RL training
+  cycles ([§6](#6-closing-the-real-to-sim-gap-with-robotics-connect)) — real-to-sim feeding sim-to-real.
 
-Everything *else* was found and applied rather than invented: the balance-while-reach formulation rides
-**Isaac Lab's locomotion RL rails** and the **PPO** recipe (PPO = the standard RL training algorithm);
-the load/grip-slip robustness is **force-adaptive whole-body control** from the recent literature
-(**FALCON**); the *learn-to-reach-then-add-force* curriculum is **NVIDIA's Isaac Lab 2.3** pattern.
+That is the honest shape of applied physical AI: assemble the proven pieces, and do real engineering on
+the few that nobody has solved yet.
 
 ### The real insight: the human/AI division of labour
 
@@ -270,7 +274,8 @@ sim-to-real.
 
 ## 7. The research & resources we reused
 
-The heart of the engineering approach: **almost nothing here was invented — it was found and applied.**
+The spine of this system is reused — found and applied. (The genuinely open problems we *did* have to
+build are in [§1](#1-how-it-was-built).)
 
 **Research papers (the force-adaptive / whole-body-control ideas we applied)**
 - **FALCON: Learning Force-Adaptive Humanoid Loco-Manipulation** — adapting a whole-body policy to
@@ -436,5 +441,5 @@ Code (all under [`rl/`](rl/)): `robot_cfg.py` (mobile Inspire cfg + PD gains), `
 ---
 
 *Hardware: NVIDIA DGX Spark (GB10). Stack: Isaac Sim 5.1 (source build, aarch64) · Isaac Lab 2.3.2 ·
-rsl-rl-lib 5.0.1 · PyTorch cu13. Physically valid for sim-to-real — no kinematic cheats. Built the
-engineer's way: apply the research, verify by eye, iterate.*
+rsl-rl-lib 5.0.1 · PyTorch cu13. Physically valid for sim-to-real — no kinematic cheats. Apply the
+proven research, build the open pieces, verify by eye, iterate.*
