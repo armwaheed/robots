@@ -31,12 +31,17 @@ def superellipsoid_mesh(
     color: Tuple[float, float, float] = (0.93, 0.93, 0.96),
     roundness: float = 0.35,
     res: int = 28,
+    rot_y_deg: float = 0.0,
 ):
     """Author a smooth rounded-box (superellipsoid) ``UsdGeom.Mesh`` of full
     ``size`` centred at ``center``. ``roundness`` in (0,1]: 1.0 = ellipsoid,
-    ~0.3 = boxy-with-rounded-edges (pillow). Visual only (no collision)."""
+    ~0.3 = boxy-with-rounded-edges (pillow). ``rot_y_deg`` tips the box about the
+    y (bed-width) axis around its centre — used to prop the pillows up against the
+    headboard. Visual only (no collision)."""
     a, b, c = size[0] / 2.0, size[1] / 2.0, size[2] / 2.0
     e = roundness
+    th = math.radians(rot_y_deg)
+    ct, st = math.cos(th), math.sin(th)
     nlat, nlon = res, res * 2
     pts = []
     for i in range(nlat + 1):
@@ -45,9 +50,9 @@ def superellipsoid_mesh(
         for j in range(nlon + 1):
             v = -math.pi + 2.0 * math.pi * j / nlon
             cv, sv = _sgnpow(math.cos(v), e), _sgnpow(math.sin(v), e)
-            pts.append(Gf.Vec3f(a * cu * cv + center[0],
-                                b * cu * sv + center[1],
-                                c * su + center[2]))
+            lx, ly, lz = a * cu * cv, b * cu * sv, c * su  # local (centred) point
+            rx, rz = lx * ct + lz * st, -lx * st + lz * ct  # rotate about +y
+            pts.append(Gf.Vec3f(rx + center[0], ly + center[1], rz + center[2]))
     idx, counts = [], []
 
     def vid(i: int, j: int) -> int:

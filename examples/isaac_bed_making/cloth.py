@@ -267,6 +267,97 @@ def release(stage, attach_path: str) -> None:
         stage.RemovePrim(attach_path)
 
 
+def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
+                 world_pos, radius: float = 0.03, mass: float = 0.004, friction: float = 12.0,
+                 bind_offset: float = 0.10):
+    """Sew a small rigid **grab tab** into the cloth at ``world_pos`` and return its prim path.
+
+    WHY a rigid tab: in Isaac Sim 5.1 a particle-cloth ↔ **articulation-link** attachment is
+    *unsupported* (NVIDIA IsaacLab #4291) — attaching the cloth straight to the robot's wrist link
+    is exactly why the grip slips. A particle-cloth ↔ **free rigid body** attachment IS supported
+    and holds. So we bind a tiny rigid sphere to the cloth (the supported direction); the robot's
+    hand then physically grips THIS rigid tab (finger friction). The drag load transmits
+    cloth → tab → hand → robot, so the robot still does real physical work and must balance against
+    it — no kinematic pinning. The tab is a stand-in for the wad of cloth a real pinch grasp bunches
+    up (which behaves semi-rigidly), and it is light enough not to distort the drape.
+    """
+    # A small SPHERE (NOT a box: box-shaped tabs detonate the particle solver — eye-verified head_v12;
+    # spheres are stable). Cloth-coloured so it reads as part of the sheet. Roll-off is avoided by
+    # keeping tabs on the flat HEAD edge (head_only) and, for the spring grip, filtering tabs from the
+    # robot so the hand never plows into them.
+    sph = UsdGeom.Sphere.Define(stage, tab_path)
+    sph.CreateRadiusAttr(float(radius))
+    sph.CreateDisplayColorAttr().Set([Gf.Vec3f(0.86, 0.86, 0.92)])
+    UsdGeom.Xformable(sph).AddTranslateOp().Set(Gf.Vec3d(float(world_pos[0]), float(world_pos[1]), float(world_pos[2])))
+    prim = sph.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    UsdPhysics.CollisionAPI.Apply(prim)
+    UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass))
+    # High-friction rigid material so the closed fingers hold the tab (rigid-on-rigid friction is
+    # well-behaved, unlike a friction grasp on soft particle cloth which slips).
+    from omni.physx.scripts import physicsUtils
+    from pxr import UsdShade
+    mat_path = Sdf.Path(tab_path + "_mat")
+    mat = UsdShade.Material.Define(stage, mat_path)
+    mapi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+    mapi.CreateStaticFrictionAttr(float(friction))
+    mapi.CreateDynamicFrictionAttr(float(friction))
+    mapi.CreateRestitutionAttr(0.0)
+    physicsUtils.add_physics_material_to_prim(stage, prim, mat_path)
+    # FILTER tab↔cloth COLLISION: the tab is bound to the cloth by the attachment, so it must NOT
+    # also collide with the cloth particles — a rigid body coincident with particles it is attached
+    # to makes the collision repulsion fight the attachment and the particle solver explodes (the
+    # head_v9 blow-up). The tab still collides with the HAND (not filtered), so the fingers can grip it.
+    fp = UsdPhysics.FilteredPairsAPI.Apply(prim)
+    rel = fp.CreateFilteredPairsRel()
+    rel.AddTarget(Sdf.Path(cloth_path))
+    rel.AddTarget(Sdf.Path(cloth_path + "_particles"))
+    # Bind the tab to the cloth where they overlap (the SUPPORTED cloth↔rigid attachment).
+    grasp(stage, cloth_path, tab_path, attach_path, bind_offset=bind_offset)
+    return tab_path
+
+
+def add_perimeter_grab_tabs(stage, sheet: "Bedsheet", prefix: str = "/World/GrabTab",
+                            depth: float = 0.33, stride_m: float = 0.18, radius: float = 0.025,
+                            mass: float = 0.0003, friction: float = 12.0, bind_offset: float = 0.05,
+                            head_only: bool = True):
+    """Stud the cover with light rigid grab tabs, each bound to the cloth, so the hand has something
+    rigid to physically grip wherever it closes — the motion policy's exact grab point isn't predictable,
+    so a wide, deep grippable band gives tolerance. Built ONCE at scene-build time (before the first
+    physics step) so the new rigid bodies are part of the initial state and don't shock a running solver.
+    Returns the list of tab prim paths.
+
+    ``head_only`` (default) restricts the band to the HEAD EDGE (the edge the robots draw up) at full
+    ``depth``: tabs on the foot/side edges hang off the bed and drag the whole cover onto the floor
+    (eye-verified head_v10/v11), and those edges are never grabbed in the bed-DRAW task. ``stride_m``
+    subsamples ALONG the edge (the width) to keep the count — and the added stiffness — modest so the
+    cover still crumples and drapes.
+    """
+    pts = list(sheet.mesh.GetPointsAttr().Get())   # authored world-space node positions
+    nx, ny = sheet.nx, sheet.ny
+    Wx, Wy = sheet.size
+    dx, dy = Wx / nx, Wy / ny
+    di = max(1, round(depth / dx))                 # band depth in node units (x = head→foot)
+    dj = max(1, round(depth / dy))
+    sj = max(1, round(stride_m / dy))              # subsample along the width (y)
+    paths, k = [], 0
+    for j in range(0, ny + 1, sj):
+        for i in range(nx + 1):
+            if head_only:
+                in_band = i < di                                       # head edge band, FULL depth
+            else:
+                in_band = (i < di or i > nx - di or j < dj or j > ny - dj)
+            if not in_band:
+                continue
+            wp = pts[j * (nx + 1) + i]
+            add_grab_tab(stage, sheet.prim_path, f"{prefix}_{k}", f"{sheet.prim_path}_tab_{k}",
+                         (wp[0], wp[1], wp[2]), radius=radius, mass=mass, friction=friction,
+                         bind_offset=bind_offset)
+            paths.append(f"{prefix}_{k}")
+            k += 1
+    return paths
+
+
 # ── live deformed positions + rendering ────────────────────────────────────
 # On the GPU PhysX pipeline, particle-cloth deformation is NOT written back to
 # the USD mesh (with Fabric on it isn't synced at all), so a headless camera

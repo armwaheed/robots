@@ -184,7 +184,8 @@ def main() -> int:
         UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
         propsmod.superellipsoid_mesh(stage, f"/World/PillowVis_{side}",
                                      size=scenemod.PILLOW_SIZE, center=scenemod.PILLOWS[side],
-                                     color=(0.95, 0.95, 0.97), roundness=scenemod.PILLOW_ROUNDNESS)
+                                     color=(0.95, 0.95, 0.97), roundness=scenemod.PILLOW_ROUNDNESS,
+                                     rot_y_deg=scenemod.PILLOW_PROP_DEG)
     robots = [scene["robot_0"], scene["robot_1"]]
     sim_dt = sim.get_physics_dt()
     if cam is not None:
@@ -218,13 +219,32 @@ def main() -> int:
         stage, scene_path, "/World/Sheet",
         size=scenemod.SHEET_SIZE, resolution=scenemod.SHEET_RES,
         origin=scenemod.SHEET_ORIGIN, color=(0.86, 0.86, 0.92),
-        thickness=scenemod.SHEET_THICKNESS, accordion=True)
+        thickness=scenemod.SHEET_THICKNESS, accordion=True,
+        accordion_start=scenemod.SHEET_ACCORDION_START,
+        accordion_gather=scenemod.SHEET_ACCORDION_GATHER,
+        accordion_waves=scenemod.SHEET_ACCORDION_WAVES,
+        accordion_amp=scenemod.SHEET_ACCORDION_AMP,
+        particle_mass=scenemod.SHEET_PARTICLE_MASS)
     # Give the sheet VISUAL THICKNESS: the particle cloth is a single-layer membrane
     # (renders thin), so we drive a separate closed double-layer slab from the same
     # live particle positions each frame and hide the membrane (physics unchanged).
     shell = clothmod.build_shell_mesh(
         stage, sheet, thickness=scenemod.SHEET_SHELL_THICKNESS, color=(0.86, 0.86, 0.92))
     mark("bedsheet built (flat head edge + accordion ruffle at the foot; thick visual shell)")
+    # Sew rigid GRAB TABS around the cover's whole perimeter NOW — before the first physics step — so
+    # the new rigid bodies are part of the initial state (creating them mid-run detonates the particle
+    # solver, head_v9). A deep grippable band on every edge gives tolerance: the policy's grab point
+    # isn't predictable, so wherever a hand closes near an edge there are rigid tabs to hold.
+    if RL_PATH:
+        def _tabf(name, d):
+            v = os.environ.get(name)
+            return float(v) if v not in (None, "") else d
+        tabs = clothmod.add_perimeter_grab_tabs(
+            stage, sheet,
+            depth=_tabf("BEDDEMO_TAB_DEPTH", 0.33),     # grippable band depth from each edge
+            stride_m=_tabf("BEDDEMO_TAB_STRIDE", 0.28),  # subsample spacing along the band
+            mass=_tabf("BEDDEMO_TAB_MASS", 0.0003))      # FEATHER-light: tab mass is irrelevant to the grip
+        mark(f"sewed {len(tabs)} rigid grab tabs around the cover perimeter (cloth↔rigid; the hand grips these)")
 
     # ── manipulation: TWO-handed Pink IK + finger grips (or optional dataset replay) ──
     # Each G1 drives both arms (the right also owns the 3-DOF waist so it leans into the
@@ -636,21 +656,22 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     # the cover didn't move.) HEADWARD = world −x; r0 (−y side) leads with its LEFT hand, r1 with RIGHT.
     sign = {0: -1.0, 1: 1.0}                  # world y of each robot's side of the bed
     HAND_LOCK = {0: "left", 1: "right"}
-    MX = scenemod.MANIP_X
     TOP = scenemod.BED_TOP_Z
-    REACH_Y = _envf("BEDDEMO_REACH_Y", 0.80)   # world |y| of the grip point (inboard, onto the cover)
-    REACH_X = _envf("BEDDEMO_REACH_X", MX)     # ~at the cover's head edge; the hand_lock picks the hand
+    REACH_Y = _envf("BEDDEMO_REACH_Y", 0.80)   # world |y| of the grip point (inboard of the y=±0.9 corner, onto the cover)
+    # Grab the cover at its HEAD EDGE, which sits HEADWARD (world −x) of the head-flanking robot
+    # (robot at MANIP_X≈-0.20, head edge at ≈-0.35). That is the whole fix for the grab/pull
+    # hand-conflict: a headward grab point is base +y for r0 / base −y for r1 — the SAME side as
+    # the headward pull — so one hand owns grab+pull (the old default MX put the grab at the
+    # robot's own x → base_y≈0 → the pull then flipped to the other hand). hand_lock holds it.
+    REACH_X = _envf("BEDDEMO_REACH_X", scenemod.SHEET_HEAD_X)
     APPROACH_Z = _envf("BEDDEMO_APPROACH_Z", TOP + 0.14)   # hover above the cover first (no contact)
     GRIP_Z = _envf("BEDDEMO_GRIP_Z", TOP + 0.0)            # descend ONTO the cover so the hand contacts it
-    PULL_DX = _envf("BEDDEMO_PULL_DX", -0.45)  # headward draw (world −x); one-sided clamp caps it ~at the pillows
+    PULL_DX = _envf("BEDDEMO_PULL_DX", -0.30)  # headward draw (world −x); one-sided clamp caps the hand ~at the pillow line (x≈-0.58)
     PULL_DZ = _envf("BEDDEMO_PULL_DZ", 0.03)   # slight lift as it draws, to ride over the bare mattress
     PULL_SECS = _envf("BEDDEMO_PULL_SECS", 3.0)  # draw
     HOLD_SECS = _envf("BEDDEMO_HOLD_SECS", 1.5)  # dwell at full extension so the gripped cloth catches up
-    # Moderate auto-attachment overlap offset: we grab AT CONTACT (below), so this need not be large
-    # -- and large attachment distances destabilize the PhysX solver (Omniverse deformable docs); the
-    # Surface Gripper extension doesn't support particle cloth (forum 309363). Auto-attachment at
-    # contact is the supported path for gripping particle cloth.
-    GRASP_OFFSET = _envf("BEDDEMO_GRASP_OFFSET", 0.16)   # attachment overlap radius (>= the sensor contact gap)
+    # The grip is PHYSICAL: the cover is studded with rigid grab tabs (built in main via the supported
+    # cloth↔rigid attachment) and the hand grips a tab by closing its fingers — see do_grasp.
 
     # Sensor-driven grasp DECISION (grasp.py): the reach policy is trusted with the motion; this
     # decides WHEN to close/open the physical cloth grip from a short-range hand sensor. We never
@@ -660,29 +681,46 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     SLIP_GAP = _envf("BEDDEMO_SLIP_GAP", 0.28)           # gripped but sensor lost it this far -> let go
     sensors = {i: graspmod.HandClothSensor(SENSING_RANGE) for i in (0, 1)}
     decide = {i: graspmod.GraspDecision(CONTACT_GAP, SLIP_GAP) for i in (0, 1)}
+    recovering = {0: False, 1: False}   # set once a robot lets go on balance-loss (requirement E)
+    fgrip = {}                          # per-robot FingerGrip on the active hand (closes on the grab tab)
     for i in (0, 1):                  # commit each robot to its headward-pull hand for the whole task
         bedreach[i].hand_lock = HAND_LOCK[i]
 
     def reach(i, z):                  # world-frame grip target (hand fixed by the one-sided clamp)
         return (REACH_X, sign[i] * REACH_Y, z)
 
-    def pull(i):                      # world-frame headward draw (same hand — one-sided base_y clamp)
-        return (REACH_X + PULL_DX, sign[i] * REACH_Y, GRIP_Z + PULL_DZ)
+    def pull_to(i, frac):
+        # World-frame headward draw, RAMPED from the grip point by ``frac`` (0→1). Easing the
+        # target headward gradually (rather than commanding the far endpoint at once) lets the
+        # policy WALK the cover up and the foot accordion feed slack, instead of lunging at a far
+        # point and yanking the rigid grip taut — the jerk that launched the free base (issue #2).
+        return (REACH_X + frac * PULL_DX, sign[i] * REACH_Y, GRIP_Z + frac * PULL_DZ)
+
+    def balance_lost(i):
+        # Requirement E (sim-to-real): a robot reads its own balance (IMU/proprioception). If the
+        # gripped drag is yanking it off its feet — pelvis dropping toward a fall, base launched out
+        # of a sane work envelope, or a violent base velocity — it LETS GO rather than be dragged
+        # over. NOT a kinematic cheat: nothing is moved; we only decide to release the cloth grip.
+        d = bedreach[i].robot.data
+        pelvis_z = float(d.root_pos_w[0, 2])
+        bx, by = bedreach[i].base_xy()
+        v = d.root_lin_vel_w[0]
+        speed = float((v[0] ** 2 + v[1] ** 2) ** 0.5)
+        return pelvis_z < 0.45 or speed > 1.5 or abs(bx) > 1.4 or abs(by) > 1.9
 
     def do_grasp(i, gap):
-        # PhysX cloth attachment at the ACTIVE (same-side) wrist. Fingers stay OPEN (default) so the
-        # policy's joint observation stays in-distribution (closing the Inspire fingers would feed it
-        # joint angles it never saw in training).
+        # PHYSICAL grip: close the active Inspire hand around the rigid grab tab sewn into the cover.
+        # The tab is bound to the cloth via the supported cloth↔rigid attachment, so the closed,
+        # rubberized fingers holding the rigid tab drag the cover (rigid-on-rigid friction holds,
+        # unlike a friction grasp on soft particle cloth). No kinematic attachment to the hand.
         ah = bedreach[i].ee_pos()
-        print(f"[grip] r{i} GRASP at hand=({ah[0]:.2f},{ah[1]:.2f},{ah[2]:.2f}) sensor_gap={gap:.3f} "
-              f"wrist={bedreach[i].active_wrist_link()}", flush=True)
-        clothmod.grasp(stage, sheet.prim_path,
-                       f"/World/envs/env_0/Robot_{i}/{bedreach[i].active_wrist_link()}",
-                       f"/World/Sheet_grasp_{i}", bind_offset=GRASP_OFFSET)
+        print(f"[grip] r{i} GRASP (close fingers on tab) at hand=({ah[0]:.2f},{ah[1]:.2f},{ah[2]:.2f}) "
+              f"sensor_gap={gap:.3f} wrist={bedreach[i].active_wrist_link()}", flush=True)
+        fgrip[i].set(1.0)
 
     def do_release(i, why):
         print(f"[grip] r{i} RELEASE ({why})", flush=True)
-        clothmod.release(stage, f"/World/Sheet_grasp_{i}")
+        fgrip[i].set(0.0)
 
     def sheet_report(label):
         cw = clothmod.corner_world_positions(cloth_view, sheet) if cloth_view is not None else {}
@@ -696,12 +734,20 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
                   f"SW=({sw[0]:.2f},{sw[1]:.2f},{sw[2]:.2f})  {hands}", flush=True)
         return cw
 
+    def _aim(i, tgt_fn):
+        # A robot that let go on balance-loss holds a neutral near-body reach to re-settle on its
+        # feet; everyone else tracks the commanded world target.
+        if recovering[i]:
+            bedreach[i].set_base_target([0.30, 0.0, -0.05])
+        else:
+            bedreach[i].set_world_target(tgt_fn(i))
+
     def run(n_ctl, tgt_fn, cap=3, mode=None):
         """Drive the trusted reach policy to ``tgt_fn(i)`` for n_ctl steps. ``mode``:
-        'seek' = grab the instant the hand sensor reports contact; 'pull' = release if the
-        sensor reports the grip has slipped. The policy owns the whole-body motion throughout."""
+        'seek' = grab the instant the hand sensor reports contact; 'pull' = release if the grip
+        slipped OR the drag is toppling the robot. The policy owns the whole-body motion throughout."""
         for i in (0, 1):
-            bedreach[i].set_world_target(tgt_fn(i))
+            _aim(i, tgt_fn)
         for s in range(n_ctl):
             for i in (0, 1):
                 bedreach[i].act()       # the policy owns the whole body (legs balance, arms reach)
@@ -714,8 +760,13 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
                     true_gap = graspmod.HandClothSensor.true_gap(h, pts)
                     if mode == "seek" and decide[i].on_reach(sensed, true_gap):
                         do_grasp(i, sensed)
-                    elif mode == "pull" and decide[i].on_pull(sensed, true_gap):
-                        do_release(i, "sensor lost the cloth (slipped)")
+                    elif mode == "pull" and decide[i].holding:
+                        if not recovering[i] and balance_lost(i):
+                            do_release(i, "losing balance — let go (requirement E)")
+                            recovering[i] = True
+                            bedreach[i].set_base_target([0.30, 0.0, -0.05])
+                        elif decide[i].on_pull(sensed, true_gap):
+                            do_release(i, "sensor lost the cloth (slipped)")
             if s % cap == 0:
                 capture()
 
@@ -724,8 +775,13 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
 
     # 0) Hand off from the walk-in: the reach policy takes over balance (hands already at the sides
     #    from the walk) and eases the leading hand up to a ready height above the draped cover.
+    #    Also sew a small rigid GRAB TAB into the cover at each robot's grab point — bound through the
+    #    SUPPORTED cloth↔rigid attachment (cloth↔articulation-link is unsupported in Sim 5.1, the real
+    #    reason a wrist attachment slips). The hand grips the tab with its fingers; the cover follows
+    #    the tab, so the drag load transmits cloth→tab→hand→robot (physical, no kinematic pinning).
     for i in (0, 1):
         bedreach[i].reset()
+        fgrip[i] = FingerGrip(bedreach[i].robot, HAND_LOCK[i], bedreach[i].device)
     print("[demo] at the bedside — the reach policy takes over and steadies…", flush=True)
     run(secs(1.8), lambda i: reach(i, APPROACH_Z), cap=4)
     diag("steady at the bedside (balancing on its own feet)")
@@ -748,8 +804,10 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
         coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
     print("[demo] drawing the cover up toward the pillows…", flush=True)
-    run(secs(PULL_SECS), pull, cap=2, mode="pull")
-    run(secs(HOLD_SECS), pull, cap=3, mode="pull")   # dwell at full extension so the gripped cloth catches up
+    RAMP = 6                                          # ease the headward target out over the stroke
+    for k in range(1, RAMP + 1):
+        run(secs(PULL_SECS / RAMP), lambda i, fr=k / RAMP: pull_to(i, fr), cap=2, mode="pull")
+    run(secs(HOLD_SECS), lambda i: pull_to(i, 1.0), cap=3, mode="pull")  # dwell so the gripped cloth catches up
     diag("drew the cover up")
     sheet_report("after pull")
 
@@ -757,7 +815,7 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     for i in (0, 1):
         if decide[i].holding:
             do_release(i, "task done")
-    run(secs(1.2), pull, cap=4)
+    run(secs(1.2), lambda i: pull_to(i, 1.0), cap=4)
     cw = sheet_report("after settle")
 
     # 4) Honest, tolerant goal: are the head-side corners drawn up into the pillow zone? Read the

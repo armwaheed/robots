@@ -22,7 +22,15 @@ The G1 USD spawns rotated +90 deg about Z (facing +y); robot 1 gets -90 deg.
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, Tuple
+
+
+def _envf(name: str, default: float) -> float:
+    """Read a float tuning knob from the environment (default off → the code value).
+    DIAGNOSTIC: lets a run sweep geometry without re-editing; strip before a ship."""
+    v = os.environ.get(name)
+    return float(v) if v not in (None, "") else default
 
 # ── Bed (mattress) ──────────────────────────────────────────────────────────
 BED_SIZE = (2.0, 1.8, 0.66)
@@ -52,20 +60,36 @@ PILLOW_SIZE = (0.5, 0.72, 0.16)
 # Pillows render as rounded superellipsoid meshes (props.superellipsoid_mesh built in
 # demo.py), not square boxes; 1.0 = ellipsoid, ~0.2 = barely rounded. Box collider stays.
 PILLOW_ROUNDNESS = 0.35
+# Prop the pillows UP against the headboard (almost vertical), not lying flat on the mattress.
+# Tipping the 0.5 m-long pillow about the y (bed-width) axis stands it on its foot-side edge with
+# its head-side edge leaning back onto the headboard front (x≈-0.94): the base rests at the
+# mattress-headboard junction and the top pokes just above the headboard, like a real propped
+# pillow. PILLOW_PROP_DEG is the tip angle from flat (≈70° → ~20° off vertical, leaning back).
+PILLOW_PROP_DEG = _envf("BEDDEMO_PILLOW_PROP_DEG", 70.0)
+# Centre of the propped pillow: pushed toward the headboard and raised to its standing mid-height.
 PILLOWS = {
-    "left": (HEAD_X + 0.42, -0.43, BED_TOP_Z + PILLOW_SIZE[2] / 2.0),
-    "right": (HEAD_X + 0.42, 0.43, BED_TOP_Z + PILLOW_SIZE[2] / 2.0),
+    "left": (HEAD_X + 0.22, -0.43, BED_TOP_Z + 0.22),
+    "right": (HEAD_X + 0.22, 0.43, BED_TOP_Z + 0.22),
 }
 
-# ── Robots: walk in from ~0.5 m off their long side, flank the bed mid-side ──
-# (pos, yaw_deg). yaw about Z: +90 faces +y, -90 faces -y. They stand near the
-# middle of each long side so they can grab the sheet's head-side corners (gathered
-# just foot-of-centre) and pull them toward the head.
+# ── Robots: walk in from ~1 m off their long side, flank the cover's head edge ──
+# (pos, yaw_deg). yaw about Z: +90 faces +y, -90 faces -y. They flank opposite long sides at
+# the cover's head edge (~mid-bed), facing the bed, then DRAW the cover headward up toward the
+# pillows — walking headward as they pull, so they end up flanking the head (the Figure Helix
+# approach, .isaac/FIGURE_ANALYSIS.md). The geometry that dissolves the grab/pull hand-conflict:
+# facing the bed, world −x (headward) is base +y for robot 0 (left hand) and base −y for robot 1
+# (right hand); with the grab point HEADWARD-inboard of the robot (the head edge sits just
+# headward of MANIP_X), the grab and the headward pull keep the same base-y sign, so one hand
+# owns the whole grab+pull (no mid-task hand flip). The reach policy translates the base toward
+# the headward target, so the robots WALK the cover up rather than pull it taut from a planted
+# stance (the accordion slack feeds out). See run_bedmaking_rl.
 ROBOT_Z = 0.80      # spawn pelvis height: the velocity-walk policy's natural standing
                     # height (feet just touch the floor). 0.75 punched the feet ~4 cm
                     # through the floor at spawn and the policy couldn't recover.
 STAND_PELVIS_Z = 0.80  # clean upright standing pelvis height for manipulation (feet on floor)
-MANIP_X = 0.05      # flank the bed near mid-side, within reach of the head-side corners
+# Start just FOOTWARD of the cover's head edge (~x=0.15) so the head edge is a short headward
+# reach in front of each robot (keeping grab+pull on one hand), then walk headward dragging it.
+MANIP_X = _envf("BEDDEMO_MANIP_X", 0.40)   # flank ~0.2 m footward of the cover's settled head edge (~x=0.20); walk headward to draw it up
 MANIP_Y = 1.05      # walk-in target at the bedside (just off the y=+/-0.9 bed side)
 APPROACH_Y = MANIP_Y + 1.0  # spawn ~1 m out from the bedside mark, so the G1s WALK in under the
                             # policy (not teleport); the walk doubles as the sheet's drape time.
@@ -99,22 +123,23 @@ BED_CORNERS: Dict[str, Tuple[float, float, float]] = {
 }
 
 # ── Bedsheet ────────────────────────────────────────────────────────────────
-# Full bed width + ~9 in overhang on both long sides. It starts FLAT and gathered
-# toward the foot: the head-side edge sits just foot-of-centre (~x=+0.1), the rest
-# lies over the foot half and drapes off the foot of the bed — the head half of the
-# mattress is bare. The robots grab the two head-side corners and pull the cover up
-# toward the head. (No fold-back: that accordion start was too hard to unfold.)
+# ACCORDION-AT-THE-FOOT start (issue #2): the cover is gathered toward the FOOT of the bed,
+# its head edge at ~mid-bed (well foot-of-the-pillows so there is a real draw to make), the
+# rest pleated into a ruffle of slack over the foot half and draping off the foot. The head
+# half up to the pillows is bare mattress. The robots grab the head edge and draw it HEADWARD
+# up toward the pillows; the foot accordion UNSPOOLS that slack as they pull, so the cover
+# feeds up instead of dragging taut (a taut sheet yanks the gripping hand and launches the
+# balancing robot — issue #2). See cloth.build_bedsheet's accordion_* args.
 #
-# It is a fairly FINE, thin, drapey sheet so the side overhang actually folds down
-# over the mattress edges and the cloth stays calm (a thick, coarse "duvet" grips a
-# touch better but turns rigid — the overhang juts out stiff — and flutters).
-#
-# The foot is ACCORDION-pleated (demo passes accordion=True): the head-side strip the
-# robots grip lies flat, and the rest is gathered into a ruffle of slack over the foot
-# half. Pulling the flat head edge toward the head UNSPOOLS that slack rather than
-# dragging a sheet stuck flat to the mattress — so the friction grip suffices and the
-# robots aren't yanked over. See cloth.build_bedsheet's accordion_* args.
-SHEET_SIZE = (1.3, BED_SIZE[1] + 2 * OVERHANG)  # (x length, y width ~2.26 incl. side overhang)
+# FULL SIDE OVERHANG (~9 in each long side): the cover hangs over the mattress sides — visually
+# important for the demo. It is a FINE, thin, drapey sheet so the overhang folds DOWN over the
+# mattress edges (below the robots' reach height) and stays calm, rather than juting out stiff.
+# The walk-in is the drape time: by the time the robots arrive the side overhang has folded
+# down off the edges, clearing their arm space (so it does not dump on their arms and topple
+# them — the reason it was briefly trimmed; restored here per the demo's visual need).
+SHEET_LEN = _envf("BEDDEMO_SHEET_LEN", 1.55)                  # x length: head edge → off the foot
+SHEET_W = _envf("BEDDEMO_SHEET_W", BED_SIZE[1] + 2 * OVERHANG)  # y width incl. 9-in side overhang (~2.26)
+SHEET_SIZE = (SHEET_LEN, SHEET_W)
 # MuJoCo recipe (issue #2, 2026-06-06): COARSE + FEATHERLIGHT + THICK is what made the
 # MuJoCo flex sheet look good and hang still — not "triangles". MuJoCo used 143 verts /
 # 0.18 kg / ~4.4 cm. Match it: a coarse grid (with cloth.py's light particle_mass this
@@ -128,10 +153,23 @@ SHEET_THICKNESS = 0.05                          # thick physics/collision profil
 # surface normal each frame — purely render-side, physics unchanged. 0.07 m reads as a
 # substantial folded cover (validated in isolation 2026-06-08, .isaac/shell_tune).
 SHEET_SHELL_THICKNESS = 0.07
-# Centre placed so the flat head edge sits at ~x=+0.05 (right where the robots stand,
-# head half of the bed bare) and the pleated ruffle gathers over the foot half. Rests
-# just above the mattress top so it settles onto it (not floating in the air).
-SHEET_ORIGIN = (0.70, 0.0, BED_TOP_Z + 0.04)
+# Centre placed from the desired HEAD EDGE x: the head edge (the grab line the robots draw
+# headward) sits at ~mid-bed, foot-of-the-pillows, so there is a real draw to make; the cover
+# extends footward from there over the foot half and drapes off the foot. Rests just above
+# the mattress top so it settles onto it (not floating in the air).
+SHEET_HEAD_X = _envf("BEDDEMO_SHEET_HEAD_X", 0.15)    # world x of the cover's head edge (the grab line)
+SHEET_ORIGIN = (SHEET_HEAD_X + SHEET_LEN / 2.0, 0.0, BED_TOP_Z + 0.04)
+# Accordion (crumple) the WHOLE cover, head edge included, so it sits as a short bunched band with
+# only a little overhang over the FOOT of the bed — not a long flat sheet draping far off the foot.
+# That drape's weight + the foot-edge friction was anchoring the cover and fighting the pull (issue
+# #2; user feedback on the head_v6/v7 mp4). With START≈0 the whole sheet is gathered (not just the
+# foot), its x-extent compressed to GATHER and the slack taken up by WAVES deep z-folds of height
+# AMP that rest on each other (self-collision) so the crumple holds instead of flattening out.
+SHEET_ACCORDION_START = _envf("BEDDEMO_ACC_START", 0.0)    # 0 → accordion the entire length (incl. the head end)
+SHEET_ACCORDION_GATHER = _envf("BEDDEMO_ACC_GATHER", 0.5)  # compress the gathered x-extent to this fraction
+SHEET_ACCORDION_WAVES = int(_envf("BEDDEMO_ACC_WAVES", 8))  # number of deep crumple folds
+SHEET_ACCORDION_AMP = _envf("BEDDEMO_ACC_AMP", 0.14)       # fold height (taller folds stack + hold the crumple)
+SHEET_PARTICLE_MASS = _envf("BEDDEMO_SHEET_MASS", 0.0007)  # per particle; a lighter cover is easier to draw up
 
 # Camera: 3/4 view framing the whole bed (head + foot), both robots.
 CAM_EYE = (3.9, -3.5, 2.7)
@@ -143,6 +181,13 @@ def yaw_to_quat(yaw_deg: float) -> Tuple[float, float, float, float]:
     """Quaternion (w,x,y,z) for a rotation of yaw_deg about +Z."""
     h = math.radians(yaw_deg) / 2.0
     return (math.cos(h), 0.0, 0.0, math.sin(h))
+
+
+def roty_to_quat(deg: float) -> Tuple[float, float, float, float]:
+    """Quaternion (w,x,y,z) for a rotation of ``deg`` about +Y (tips a prop up/back).
+    Matches props.superellipsoid_mesh's rot_y_deg so a pillow's collider and visual align."""
+    h = math.radians(deg) / 2.0
+    return (math.cos(h), 0.0, math.sin(h), 0.0)
 
 
 def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
@@ -205,16 +250,19 @@ def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
         )
         return g.replace(prim_path=f"/World/envs/env_0/Robot_{idx}")
 
-    def static_box(size, center, color, friction=1.0, rounded=False):
+    def static_box(size, center, color, friction=1.0, rounded=False, rot=None):
         # A rest/contact offset INFLATES + ROUNDS the collision corners and leaves a
         # small air gap, so the particle cloth drapes over a rounded edge instead of
         # catching on a sharp 90° corner (which pokes through the sheet — the "mattress
         # edge clips the bedsheet" bug) and so it reliably catches thin colliders like
         # the pillows instead of tunnelling through them. PhysX requires contact > rest.
         # (NVIDIA forums: tune contact/rest offset on both the cloth and the colliders.)
+        # ``rot`` (w,x,y,z) tips the collider to match a propped visual (e.g. the pillows).
         cp = (sim_utils.CollisionPropertiesCfg(
                   contact_offset=COLLIDER_CONTACT_OFFSET, rest_offset=COLLIDER_REST_OFFSET)
               if rounded else sim_utils.CollisionPropertiesCfg())
+        init = (AssetBaseCfg.InitialStateCfg(pos=center, rot=rot) if rot is not None
+                else AssetBaseCfg.InitialStateCfg(pos=center))
         return AssetBaseCfg(
             spawn=sim_utils.CuboidCfg(
                 size=size,
@@ -223,7 +271,7 @@ def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
                     static_friction=friction, dynamic_friction=friction, restitution=0.0),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
             ),
-            init_state=AssetBaseCfg.InitialStateCfg(pos=center),
+            init_state=init,
         )
 
     @configclass
@@ -242,12 +290,12 @@ def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
             prim_path="/World/Bed")
         headboard = static_box(HEADBOARD_SIZE, HEADBOARD_CENTER, (0.35, 0.24, 0.17),
                                rounded=True).replace(prim_path="/World/Headboard")
-        # Pillows are rounded colliders so the cover drapes OVER their tops (functional
-        # pillows) instead of passing through them.
+        # Pillows are rounded colliders (tipped up to match the propped visual) so the cover
+        # drapes against them instead of passing through. The tip is about +Y (roty_to_quat).
         pillow_l = static_box(PILLOW_SIZE, PILLOWS["left"], (0.93, 0.93, 0.96),
-                              rounded=True).replace(prim_path="/World/PillowL")
+                              rounded=True, rot=roty_to_quat(PILLOW_PROP_DEG)).replace(prim_path="/World/PillowL")
         pillow_r = static_box(PILLOW_SIZE, PILLOWS["right"], (0.93, 0.93, 0.96),
-                              rounded=True).replace(prim_path="/World/PillowR")
+                              rounded=True, rot=roty_to_quat(PILLOW_PROP_DEG)).replace(prim_path="/World/PillowR")
         robot_0 = walker(0)
         robot_1 = walker(1)
 
