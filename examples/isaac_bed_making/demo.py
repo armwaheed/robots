@@ -117,6 +117,8 @@ from isaaclab.scene import InteractiveScene  # noqa: E402
 from isaaclab_assets.robots.unitree import G1_INSPIRE_FTP_CFG  # noqa: E402
 
 from examples.isaac_bed_making import cloth as clothmod  # noqa: E402
+from examples.isaac_bed_making import coverage as coveragemod  # noqa: E402
+from examples.isaac_bed_making import grasp as graspmod  # noqa: E402
 from examples.isaac_bed_making import locomotion as locomod  # noqa: E402
 from examples.isaac_bed_making import scene as scenemod  # noqa: E402
 from examples.isaac_bed_making.manipulation import FingerGrip, PinkArmIK, apply_hand_friction  # noqa: E402
@@ -620,33 +622,100 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     for robot 0 (−y side) and base −y for robot 1 (+y side): so robot 0 leads with its LEFT hand
     and robot 1 with its RIGHT — a natural same-side abduction for both, not the cross-body sweep
     one hand can't balance."""
-    sign = {0: -1.0, 1: 1.0}
+    import numpy as np
+
+    def _envf(name, default):   # DIAGNOSTIC tuning knobs (default off → code values); strip before commit
+        v = os.environ.get(name)
+        return float(v) if v not in (None, "") else default
+
+    # Trust the reach policy for the MOTION; command WORLD-frame hand targets (which reach the cover
+    # correctly — a fixed world point compensates for the base position) and COMMIT each robot to ONE
+    # hand via a one-sided base_y clamp (locomotion.BedReachPolicy.hand_lock) so the grab and the
+    # headward pull stay on the SAME hand. (The prior failure: the active hand flipped between grab and
+    # pull as the base drifted, so the gripping hand went idle while the empty hand swept headward and
+    # the cover didn't move.) HEADWARD = world −x; r0 (−y side) leads with its LEFT hand, r1 with RIGHT.
+    sign = {0: -1.0, 1: 1.0}                  # world y of each robot's side of the bed
+    HAND_LOCK = {0: "left", 1: "right"}
     MX = scenemod.MANIP_X
     TOP = scenemod.BED_TOP_Z
-    REACH_Y = 0.72                   # world y of the grip point (toward bed centre; base-frame +x ≈ 0.33)
-    REACH_X = MX - 0.12              # aim 12 cm HEADWARD of the bedside so the base-frame target is
-    #                                  clearly +y/−y → each robot grips with its natural same-side
-    #                                  hand; the sheet's head edge (at MX) is within grasp range.
-    GRIP_Z = TOP + 0.06              # ≈0.72 — at the cover top
-    APPROACH_Z = TOP + 0.16          # hover above the cover first (no contact)
-    PULL_DX = -0.30                  # further headward draw (world −x), a same-side abduction sweep
-    PULL_SECS = 2.5
-    PULL_DZ = 0.05                   # slight lift as it draws
-    GRASP_OFFSET = 0.14              # cloth within this many m of the wrist is caught by the grip
+    REACH_Y = _envf("BEDDEMO_REACH_Y", 0.80)   # world |y| of the grip point (inboard, onto the cover)
+    REACH_X = _envf("BEDDEMO_REACH_X", MX)     # ~at the cover's head edge; the hand_lock picks the hand
+    APPROACH_Z = _envf("BEDDEMO_APPROACH_Z", TOP + 0.14)   # hover above the cover first (no contact)
+    GRIP_Z = _envf("BEDDEMO_GRIP_Z", TOP + 0.0)            # descend ONTO the cover so the hand contacts it
+    PULL_DX = _envf("BEDDEMO_PULL_DX", -0.45)  # headward draw (world −x); one-sided clamp caps it ~at the pillows
+    PULL_DZ = _envf("BEDDEMO_PULL_DZ", 0.03)   # slight lift as it draws, to ride over the bare mattress
+    PULL_SECS = _envf("BEDDEMO_PULL_SECS", 3.0)  # draw
+    HOLD_SECS = _envf("BEDDEMO_HOLD_SECS", 1.5)  # dwell at full extension so the gripped cloth catches up
+    # Moderate auto-attachment overlap offset: we grab AT CONTACT (below), so this need not be large
+    # -- and large attachment distances destabilize the PhysX solver (Omniverse deformable docs); the
+    # Surface Gripper extension doesn't support particle cloth (forum 309363). Auto-attachment at
+    # contact is the supported path for gripping particle cloth.
+    GRASP_OFFSET = _envf("BEDDEMO_GRASP_OFFSET", 0.16)   # attachment overlap radius (>= the sensor contact gap)
 
-    def reach(i, z):
+    # Sensor-driven grasp DECISION (grasp.py): the reach policy is trusted with the motion; this
+    # decides WHEN to close/open the physical cloth grip from a short-range hand sensor. We never
+    # move the robot or cloth kinematically.
+    SENSING_RANGE = _envf("BEDDEMO_SENSE_RANGE", 0.15)   # a real hand sensor sees nothing past a few cm
+    CONTACT_GAP = _envf("BEDDEMO_CONTACT_GAP", 0.10)     # within this the cloth is in the hand -> grab
+    SLIP_GAP = _envf("BEDDEMO_SLIP_GAP", 0.28)           # gripped but sensor lost it this far -> let go
+    sensors = {i: graspmod.HandClothSensor(SENSING_RANGE) for i in (0, 1)}
+    decide = {i: graspmod.GraspDecision(CONTACT_GAP, SLIP_GAP) for i in (0, 1)}
+    for i in (0, 1):                  # commit each robot to its headward-pull hand for the whole task
+        bedreach[i].hand_lock = HAND_LOCK[i]
+
+    def reach(i, z):                  # world-frame grip target (hand fixed by the one-sided clamp)
         return (REACH_X, sign[i] * REACH_Y, z)
 
-    def pull(i):
+    def pull(i):                      # world-frame headward draw (same hand — one-sided base_y clamp)
         return (REACH_X + PULL_DX, sign[i] * REACH_Y, GRIP_Z + PULL_DZ)
 
-    def run(n_ctl, tgt_fn, cap=3):
+    def do_grasp(i, gap):
+        # PhysX cloth attachment at the ACTIVE (same-side) wrist. Fingers stay OPEN (default) so the
+        # policy's joint observation stays in-distribution (closing the Inspire fingers would feed it
+        # joint angles it never saw in training).
+        ah = bedreach[i].ee_pos()
+        print(f"[grip] r{i} GRASP at hand=({ah[0]:.2f},{ah[1]:.2f},{ah[2]:.2f}) sensor_gap={gap:.3f} "
+              f"wrist={bedreach[i].active_wrist_link()}", flush=True)
+        clothmod.grasp(stage, sheet.prim_path,
+                       f"/World/envs/env_0/Robot_{i}/{bedreach[i].active_wrist_link()}",
+                       f"/World/Sheet_grasp_{i}", bind_offset=GRASP_OFFSET)
+
+    def do_release(i, why):
+        print(f"[grip] r{i} RELEASE ({why})", flush=True)
+        clothmod.release(stage, f"/World/Sheet_grasp_{i}")
+
+    def sheet_report(label):
+        cw = clothmod.corner_world_positions(cloth_view, sheet) if cloth_view is not None else {}
+        nw, sw = cw.get("NW"), cw.get("SW")
+        pts = clothmod.view_positions(cloth_view) if cloth_view is not None else np.zeros((0, 3))
+        hands = " ".join(
+            f"r{i}hand=({(h:=bedreach[i].ee_pos())[0]:.2f},{h[1]:.2f},{h[2]:.2f})"
+            f"/gap{graspmod.HandClothSensor.true_gap(h, pts):.2f}" for i in (0, 1))
+        if nw and sw:
+            print(f"[sheet] {label}: NW=({nw[0]:.2f},{nw[1]:.2f},{nw[2]:.2f}) "
+                  f"SW=({sw[0]:.2f},{sw[1]:.2f},{sw[2]:.2f})  {hands}", flush=True)
+        return cw
+
+    def run(n_ctl, tgt_fn, cap=3, mode=None):
+        """Drive the trusted reach policy to ``tgt_fn(i)`` for n_ctl steps. ``mode``:
+        'seek' = grab the instant the hand sensor reports contact; 'pull' = release if the
+        sensor reports the grip has slipped. The policy owns the whole-body motion throughout."""
         for i in (0, 1):
             bedreach[i].set_world_target(tgt_fn(i))
         for s in range(n_ctl):
             for i in (0, 1):
                 bedreach[i].act()       # the policy owns the whole body (legs balance, arms reach)
             step(DECIMATION)
+            if mode and cloth_view is not None:
+                pts = clothmod.view_positions(cloth_view)
+                for i in (0, 1):
+                    h = bedreach[i].ee_pos()
+                    sensed = sensors[i].read(h, pts)
+                    true_gap = graspmod.HandClothSensor.true_gap(h, pts)
+                    if mode == "seek" and decide[i].on_reach(sensed, true_gap):
+                        do_grasp(i, sensed)
+                    elif mode == "pull" and decide[i].on_pull(sensed, true_gap):
+                        do_release(i, "sensor lost the cloth (slipped)")
             if s % cap == 0:
                 capture()
 
@@ -661,40 +730,49 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     run(secs(1.8), lambda i: reach(i, APPROACH_Z), cap=4)
     diag("steady at the bedside (balancing on its own feet)")
 
-    # 1) reach down onto the sheet's near head edge (balancing on its own two feet).
+    # 1) reach DOWN onto the sheet's near head edge; the DECISION layer grips the instant the hand
+    #    sensor reports cloth in the hand (not at a fixed time) — the reach itself is the policy's.
     if coord:
         coord.invoke(0, "pickUpBedSheet", corner="A")
         coord.invoke(1, "pickUpBedSheet", corner="B")
-    print("[demo] reaching down onto the sheet…", flush=True)
-    run(secs(2.0), lambda i: reach(i, GRIP_Z))
-    diag("hand on the sheet")
-
-    # 2) grip the cover — PhysX cloth attachment at the ACTIVE (same-side) wrist. Fingers stay OPEN
-    #    (default) so the policy's joint observation stays in-distribution (closing the Inspire
-    #    fingers feeds it joint angles it never saw in training).
+    print("[demo] reaching onto the sheet; gripping when the hand sensor feels cloth…", flush=True)
+    run(secs(2.6), lambda i: reach(i, GRIP_Z), mode="seek")
     for i in (0, 1):
-        clothmod.grasp(stage, sheet.prim_path,
-                       f"/World/envs/env_0/Robot_{i}/{bedreach[i].active_wrist_link()}",
-                       f"/World/Sheet_grasp_{i}", bind_offset=GRASP_OFFSET)
-    print("[demo] gripped the cover…", flush=True)
-    run(secs(0.6), lambda i: reach(i, GRIP_Z))
-    diag("gripped")
+        print(f"[grip] r{i} closest approach this reach = {decide[i].min_true_gap:.3f} m "
+              f"(gripped={decide[i].gripped})", flush=True)
+    diag("done reaching")
+    sheet_report("at grip")
 
-    # 3) draw the cover toward the head (short, balanced) + a help exchange over Device Connect.
+    # 2) draw the cover up toward the pillows (long + held); release if the sensor says it slipped.
     if coord:
         coord.invoke(0, "askForHelp", corner="A", reason="squaring my side")
         coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
-    print("[demo] drawing the cover toward the head…", flush=True)
-    run(secs(PULL_SECS), pull, cap=2)
+    print("[demo] drawing the cover up toward the pillows…", flush=True)
+    run(secs(PULL_SECS), pull, cap=2, mode="pull")
+    run(secs(HOLD_SECS), pull, cap=3, mode="pull")   # dwell at full extension so the gripped cloth catches up
     diag("drew the cover up")
+    sheet_report("after pull")
 
-    # 4) release + settle.
+    # 3) release whatever is still held + settle.
     for i in (0, 1):
-        clothmod.release(stage, f"/World/Sheet_grasp_{i}")
-    if coord:
-        coord.invoke(0, "putDownBedSheet", corner="A")
-        coord.invoke(1, "putDownBedSheet", corner="B")
+        if decide[i].holding:
+            do_release(i, "task done")
     run(secs(1.2), pull, cap=4)
+    cw = sheet_report("after settle")
+
+    # 4) Honest, tolerant goal: are the head-side corners drawn up into the pillow zone? Read the
+    #    live cloth corners and test each against a pillow-anchored radius (coverage.py) -- no
+    #    overseer cam, no trust-based tally. Only claim a corner placed on Device Connect if it
+    #    actually landed there.
+    report = None
+    if cw:
+        report = coveragemod.evaluate_bed_made(
+            cw, {k: scenemod.BED_CORNERS[k] for k in ("NW", "SW")}, scenemod.PILLOWS)
+        print(f"[goal] pillow-anchored bed-made check: {report.as_dict()}", flush=True)
+    if coord:
+        for i, label, ckey in ((0, "A", "SW"), (1, "B", "NW")):   # r0 grips the -y (SW) head corner
+            if report is None or report.placed.get(ckey):
+                coord.invoke(i, "putDownBedSheet", corner=label)
     diag("after bed-making (RL)")
     capture()
 

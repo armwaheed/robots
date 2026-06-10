@@ -530,7 +530,9 @@ class BedReachPolicy:
         self.right_ee_id, self.left_ee_id = int(rid[0]), int(lid[0])
         self.last_action = torch.zeros(len(self.body_ids), device=device)  # raw policy output (29)
         self._target_w = None  # world-frame hand target (3,)
+        self._target_b = None  # base-frame hand target (3,) — takes precedence over _target_w
         self._cmd_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)  # identity (training fixed rpy=0)
+        self.hand_lock = None  # None | "left" | "right": commit to one hand for the whole grab+pull
 
     def reset(self) -> None:
         self.last_action = self._torch.zeros(len(self.body_ids), device=self.device)
@@ -540,22 +542,44 @@ class BedReachPolicy:
         step (so it stays correct as the robot leans/turns); the policy reaches with whichever hand
         is on the target's side — aim it headward and each flanking robot uses its natural hand."""
         self._target_w = self._torch.tensor(xyz, device=self.device, dtype=self._torch.float32)
+        self._target_b = None
+
+    def set_base_target(self, pos_b) -> None:
+        """Aim the reaching hand at a point in the robot's BASE frame (the frame the policy was
+        TRAINED on: UniformPoseCommand samples the target in base frame). Held constant in the base
+        frame, so (a) the active hand can't flip as the base drifts — base_y's sign is fixed, so one
+        hand owns the whole grab+pull — and (b) the policy sees the stationary, in-distribution
+        command it trained with, which holds station better than chasing a fixed world point. The
+        sign of pos_b[1] selects the hand: +y → left, −y → right (same-side ambidexterity)."""
+        self._target_b = self._torch.tensor(pos_b, device=self.device, dtype=self._torch.float32)
+        self._target_w = None
 
     def _hand_target_b(self):
-        """The 7-dim base-frame command [pos_b(3), quat(4)] the obs term expects. World target
-        → base frame via the inverse root rotation (the training command is defined relative to
-        the root: des_pos_w = root_pos_w + R(root_quat)·pos_b)."""
+        """The 7-dim base-frame command [pos_b(3), quat(4)] the obs term expects. A base-frame
+        target is used directly; a world target is mapped into the base frame via the inverse root
+        rotation (training: des_pos_w = root_pos_w + R(root_quat)·pos_b)."""
         from isaaclab.utils.math import quat_rotate_inverse
 
         torch = self._torch
         d = self.robot.data
         root_p = d.root_pos_w[0]
         root_q = d.root_quat_w[0]
-        tgt = self._target_w if self._target_w is not None else root_p
-        pos_b = quat_rotate_inverse(root_q.unsqueeze(0), (tgt - root_p).unsqueeze(0))[0]
+        if self._target_b is not None:
+            pos_b = self._target_b
+        else:
+            tgt = self._target_w if self._target_w is not None else root_p
+            pos_b = quat_rotate_inverse(root_q.unsqueeze(0), (tgt - root_p).unsqueeze(0))[0]
         # Clamp into the trained command box so a receding base can't drive an out-of-distribution
         # command (which the policy chases by leaning harder → steps back → runaway → topples).
         (xlo, xhi), (ylo, yhi), (zlo, zhi) = BEDREACH_CMD_CLAMP
+        # Hand lock: commit to ONE hand for the whole grab+pull by forcing base_y to that hand's
+        # side of centre (the policy reaches with the hand on the command's side, so a one-sided
+        # base_y can't flip mid-task — the failure where the gripping hand went idle and the empty
+        # hand swept headward). +y side = left hand, −y side = right hand.
+        if self.hand_lock == "left":
+            ylo = max(ylo, 0.06)
+        elif self.hand_lock == "right":
+            yhi = min(yhi, -0.06)
         pos_b = torch.stack([pos_b[0].clamp(xlo, xhi), pos_b[1].clamp(ylo, yhi), pos_b[2].clamp(zlo, zhi)])
         return torch.cat([pos_b, self._cmd_quat])
 
@@ -582,7 +606,10 @@ class BedReachPolicy:
     # ── ambidexterity helpers ────────────────────────────────────────────────────
     def _active_is_left(self) -> bool:
         """True when the policy is reaching with the LEFT hand — i.e. the commanded target is on
-        the robot's left (base +y). Read straight from the live (clamped) base-frame command."""
+        the robot's left (base +y). With a hand_lock set, the answer is fixed (the clamp keeps the
+        command on that side); otherwise read straight from the live (clamped) base-frame command."""
+        if self.hand_lock in ("left", "right"):
+            return self.hand_lock == "left"
         return bool(self._hand_target_b()[1] >= 0.0)
 
     def active_wrist_link(self) -> str:
