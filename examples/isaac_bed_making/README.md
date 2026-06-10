@@ -14,6 +14,13 @@ copy of the original from the [MuJoCo demo](../mujoco_bed_making/) — so it has
 
 A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](media/isaac_bed_making.mp4)**.
 
+> **Benchmark (current):** both G1s walk in, hand off to the whole-body reach policy, lean/squat to the
+> draped sheet, grip it and draw it headward — **each balancing on its own two feet through the entire
+> demo, no topple, no kinematic cheats** (eye-verified, 195 frames). The two robots adopt *different*
+> reach postures (one squats deep, one leans) because the policy solves the reach **within each robot's own
+> actuation envelope — learned control, not scripted choreography.** Open work is **manipulation quality**:
+> drawing the sheet up to the pillows (see [`RL_WHOLE_BODY_REACH.md` §8](RL_WHOLE_BODY_REACH.md#8-status--whats-next)).
+
 ## How it works, end to end
 
 1. **Walk in.** Each G1 spawns ~1 m off its side of the bed and walks to the bedside, **arms at its
@@ -42,8 +49,8 @@ stay planted), a bed‑obstacle constraint, and a FALCON‑style grip‑slip for
 **ambidextrous**: each robot reaches with the hand on the target's side, so the two flanking robots both
 pull the sheet headward as a natural same‑side motion rather than a cross‑body sweep. Free base, no
 kinematic cheats — physically valid for sim‑to‑real. The deployable policy is committed at
-[`rl/policy/`](rl/policy/); the method, its three iterations, results, training config and reproduce
-steps are in **[`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md)**.
+[`rl/policy/`](rl/policy/); the method, its four iterations (to the two‑G1 benchmark), results, training
+config and reproduce steps are in **[`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md)**.
 
 | Reach over the bedside (ambidextrous) | Walk in, arms at the sides |
 | --- | --- |
@@ -140,12 +147,15 @@ not needed just to run the demo).
 
 ## Status
 
-The **walk‑in** (velocity policy, arms at sides), the **whole‑body ambidextrous bed‑reach RL policy**
-(verified in isolation — both‑handed, balanced over the bed, no topple), the **full‑overhang sheet
-drape‑during‑walk**, the cloth physics + rendering, and the Device Connect swarm all work.
+**The full two‑G1 demo runs end‑to‑end (the benchmark).** The **walk‑in** (velocity policy, arms at
+sides), the **walk→reach handoff**, the **whole‑body ambidextrous bed‑reach RL policy**, the
+**full‑overhang sheet drape‑during‑walk**, the cloth physics + rendering, and the Device Connect swarm all
+work together: **both robots balance on their own two feet through walk → reach → grip → pull, no topple**
+(eye‑verified, 195 frames). The handoff that a warm‑start could only make *marginally* stable is fixed by a
+**from‑scratch retrain** on the velocity‑walk's own arm neutral.
 
-**In progress:** the **walk→reach handoff** is being finalized via a warm‑start retrain so the reach
-policy's neutral matches the at‑sides walk pose; then the robotics‑connect‑calibrated LiDAR/RGB
-*detect → approach → switch* behaviour layer, and sustained pull‑load robustness. See the issue #2
-continuation comments and
+**Next — manipulation quality:** draw the sheet **up to (or over) the pillows** and relax the "made" goal
+so a sheet corner pulled within a wider radius of a headboard‑end mattress corner (out to the pillow)
+counts as placed; then sustained pull‑load robustness and the robotics‑connect‑calibrated LiDAR/RGB
+*detect → approach → switch* behaviour layer. See the issue #2 continuation comments and
 [`RL_WHOLE_BODY_REACH.md` §8](RL_WHOLE_BODY_REACH.md#8-status--whats-next).
