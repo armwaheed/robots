@@ -1,9 +1,9 @@
 """In-process Device Connect swarm coordination for the Isaac Sim demo.
 
-Wraps the existing :class:`BedMakingG1Driver` (the same equal-peer swarm driver
-used by the MuJoCo demo) so the Isaac Sim main loop — which is synchronous — can
-drive two G1 peers that coordinate over Device Connect on a background asyncio
-thread. Two transports, mirroring ``unitree_g1_bed_making_swarm_demo.py``:
+Wraps :class:`BedMakingG1Driver` from ``swarm_driver.py`` — a self-contained copy of the
+equal-peer swarm driver, bundled here so the Isaac demo has **no dependency on the MuJoCo
+demo** — so the Isaac Sim main loop, which is synchronous, can drive two G1 peers that
+coordinate over Device Connect on a background asyncio thread. Two transports:
 
 * ``loopback`` — no broker; an in-process bus fans events between peers. Offline.
 * ``broker``   — both peers register on the real Device Connect NATS fabric using
@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.unitree_g1_bed_making_g1_driver import (  # noqa: E402
+from examples.isaac_bed_making.swarm_driver import (  # noqa: E402
     GOAL_STATE,
     SHEET_TO_BED,
     BedMakingG1Driver,

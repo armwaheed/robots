@@ -1283,7 +1283,7 @@ class ControlPlanner:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", default="make the bed", help="High-level task label to record in the summary.")
-    parser.add_argument("--output-dir", default=str(REPO_ROOT / "artifacts" / "unitree_g1_bed_making"))
+    parser.add_argument("--output-dir", default=str(REPO_ROOT / "artifacts" / "mujoco_bed_making" / "unitree_g1_bed_making"))
     parser.add_argument("--width", type=int, default=960, help="Render width.")
     parser.add_argument("--height", type=int, default=640, help="Render height.")
     parser.add_argument(
@@ -2181,7 +2181,7 @@ def _maybe_start_device_connect(args: argparse.Namespace):
     if args.no_device_connect:
         return None
     try:
-        from examples.unitree_g1_bed_making_device_connect_sidecar import (
+        from examples.mujoco_bed_making.unitree_g1_bed_making_device_connect_sidecar import (
             BackgroundRuntime,
             default_specs,
         )

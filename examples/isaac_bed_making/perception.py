@@ -10,19 +10,22 @@ Two complementary sensors live on the G1's ``torso_link``, exactly as on the EDU
   accept a cluster whose planar area clears a bed threshold (a bed is just a large "table").
 
 * **Head Intel RealSense D435i** (robotics-connect ``depth_camera_sight``) — tilted **51.29° down**
-  about body-X (the `CAMERA_TILT_DEG_DEFAULT` calibrated on the dev EDU by a floor-plane fit). At
-  that pitch it sees only the floor and the near bed — *not* the room (the README's "hard
-  constraint"), which is exactly why the LiDAR, not the camera, does room-scale detection. The
-  head cam is used for CLOSE work: the bed-coverage / "good enough" check once at the bedside.
+  (the `CAMERA_TILT_DEG_DEFAULT` calibrated on the dev EDU by a floor-plane fit). At that pitch it
+  sees only the floor and the near bed — *not* the room — which is exactly why the LiDAR, not the
+  camera, does room-scale detection. The head cam is for CLOSE work: the bed-coverage / "good enough"
+  check once at the bedside.
 
 The LiDAR's field of view is clipped by the robot's own head geometry. ``lidar_sight`` documents two
 self-occlusions, modelled here so the simulated cloud has the same blind spots as the real sensor
 (the whole point of sim-to-real perception — a detector that works here works on hardware):
 
 * the **face-frame** vertical bars blank the **±40–45° azimuth** sectors, and
-* the **chin / lower jaw** blanks everything **below −10° elevation** (so the floor is nearly
-  invisible — and a bed is only seen once the robot is far enough that the bed top rises above that
-  cut, which is why detection happens on approach, not nose-to-the-mattress).
+* the **chin / lower jaw** blanks everything **below −10° elevation** — this hides the far *floor*,
+  not a near surface: on the real robot a table reads cleanly at ~0.4 m / −7° (above the cut), so a
+  bed is detectable up close as well as on approach (verified on-hardware in robotics-connect).
+
+Not yet wired into ``demo.py`` — this module is the sim sensing for the *detect → approach → switch*
+behaviour layer; the exact sim sensor poses + the bed height band are eye-calibrated when it lands.
 """
 
 from __future__ import annotations
@@ -47,10 +50,11 @@ CHIN_MAX_ELEVATION_DEG = -10.0                   # the chin blanks everything be
 SELF_REFLECTION_MIN_RADIAL_M = 0.15             # drop dome self-returns clustered at the origin
 
 # ── Bed detection (lidar_sight.find_tables, widened from a table to a bed) ──
-# Body-frame z band that keeps furniture-height surfaces and excludes the floor. The LiDAR sits
-# ~0.42 m above torso_link, so the bed top (≈0.66 m above floor; torso_link ≈0.80 m above floor)
-# lands near the lower part of this band while the floor sits well below it.
-BED_Z_BAND_M = (-0.60, 0.40)                     # metres in torso body frame (+z up)
+# Height band (LiDAR sensor frame, +z up) that keeps furniture-height surfaces and drops the floor:
+# a bed top reads near its lower edge, the floor sits well below. Approximate — eye-calibrate against
+# the rendered cloud when this is wired (cf. lidar_sight's torso-frame BODY_Z_TABLE_BAND, shifted by
+# the ~0.42 m sensor-above-torso mount).
+BED_Z_BAND_M = (-0.60, 0.40)                     # metres, LiDAR sensor frame (+z up)
 BED_HORIZONTAL_TOL_M = 0.06                      # |Δz| within a candidate plane to count as flat
 BED_MIN_AREA_M2 = 1.2                            # a bed's footprint dwarfs a table's (~0.15 m²)
 BED_GRID_M = 0.10                                # occupancy-cell size for the area estimate
@@ -159,12 +163,13 @@ def detect_bed(points_w: np.ndarray, sensor_pos_w, sensor_quat_w) -> BedDetectio
 
 def make_head_camera_cfg(prim_path: str, width: int = 640, height: int = 480):
     """The head RealSense D435i (robotics-connect depth_camera_sight): mounted on ``torso_link``,
-    tilted 51.29° DOWN about body-X. Used for the close-range bed-coverage check at the bedside —
-    at that pitch it frames the near bed surface, not the room."""
+    tilted 51.29° DOWN (the floor-plane-calibrated value). Used for the close-range bed-coverage check
+    at the bedside — at that pitch it frames the near bed surface, not the room."""
     import isaaclab.sim as sim_utils
     from isaaclab.sensors import CameraCfg
 
-    t = math.radians(51.29) / 2.0                            # downward pitch about body-Y in sim
+    t = math.radians(51.29) / 2.0                            # downward pitch (rot about body-Y; exact
+    #                                                         sim convention verified when wired)
     return CameraCfg(
         prim_path=prim_path,
         update_period=0,

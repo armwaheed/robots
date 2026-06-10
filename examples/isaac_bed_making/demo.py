@@ -43,8 +43,8 @@ Fabric is on). PhysX does not auto-sync particle-cloth deformation to Fabric, so
 read the live cloth positions from a PhysX tensor cloth-view and write them into the
 Fabric mesh points each render (mesh updates propagate through Fabric — see cloth.py).
 
-Self-contained: does not modify ``strands_robots`` or Arm's Device Connect; reuses
-the swarm driver from ``examples/unitree_g1_bed_making_g1_driver.py``.
+Self-contained: does not modify ``strands_robots`` or Arm's Device Connect; bundles its
+own copy of the equal-peer swarm driver (``swarm_driver.py``) — no cross-demo dependency.
 """
 
 from __future__ import annotations

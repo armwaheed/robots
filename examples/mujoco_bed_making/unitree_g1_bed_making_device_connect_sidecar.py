@@ -66,7 +66,7 @@ import threading  # noqa: E402
 
 from device_connect_edge import DeviceRuntime  # noqa: E402
 
-from examples.unitree_g1_bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
+from examples.mujoco_bed_making.unitree_g1_bed_making_g1_driver import BedMakingG1Driver  # noqa: E402
 
 DEFAULT_NATS_URL = "nats://fabric.deviceconnect.dev:4222"
 # Both G1s are equal swarm peers (no control/worker split) — the role label

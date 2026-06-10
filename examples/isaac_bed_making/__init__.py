@@ -3,16 +3,18 @@ coordinating as equal peers over Arm Device Connect.
 
 This is a self-contained example (it does not modify the ``strands_robots``
 product package or Arm's Device Connect). It runs under the Isaac Sim / Isaac
-Lab Python on a DGX Spark and reuses the Device Connect swarm driver from
-``examples/unitree_g1_bed_making_g1_driver.py``.
+Lab Python on a DGX Spark and bundles its own copy of the Device Connect swarm
+driver (:mod:`swarm_driver`), so it has no dependency on the MuJoCo demo.
 
 Modules:
 
-* :mod:`cloth`        — PhysX particle-cloth bedsheet + grasp attachment.
-* :mod:`coordination` — in-process Device Connect swarm of two G1 peers.
-* :mod:`behavior`     — per-robot autonomous state machine (non-scripted).
-* :mod:`replay`       — drive the arms from a real recorded bed-making trajectory.
+* :mod:`locomotion`   — the velocity walk-in policy + the whole-body bed-reach RL policy.
 * :mod:`scene`        — build the room/bed/sheet/robots in Isaac Sim.
+* :mod:`cloth`        — PhysX particle-cloth bedsheet + grasp attachment.
+* :mod:`perception`   — robotics-connect-calibrated LiDAR + head-camera sensing (real-to-sim).
+* :mod:`coordination` / :mod:`swarm_driver` — in-process Device Connect swarm of two G1 peers.
+* :mod:`behavior`     — per-robot autonomous state machine (non-scripted).
+* :mod:`manipulation` / :mod:`replay` — legacy ``--pink`` / ``--replay`` paths.
+* ``rl/``             — the bed-reach RL package (see ``RL_WHOLE_BODY_REACH.md``).
 * ``demo.py``         — entrypoint: ``isaaclab.sh -p examples/isaac_bed_making/demo.py``.
-* ``tools/extract_trajectory.py`` — regenerate ``data/bed_making_traj.npz`` from the dataset.
 """

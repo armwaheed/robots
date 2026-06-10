@@ -1,85 +1,98 @@
 # Two Unitree G1s make a bed in NVIDIA Isaac Sim — coordinated over Arm Device Connect
 
-Two **Unitree G1 humanoids** (with **Inspire 5‑finger hands**) **walk up to a bed
-under a learned RL locomotion policy** and make it together in **NVIDIA Isaac Sim /
-Isaac Lab**, coordinating as **equal peers over Arm Device Connect** — instead of
-"head‑nodding," they claim work and ask each other for / offer help over a real
-Device Connect swarm.
+Two **Unitree G1 humanoids** (with **Inspire 5‑finger hands**) **walk up to a bed and make it
+together** in **NVIDIA Isaac Sim / Isaac Lab**, coordinating as **equal peers over Arm Device
+Connect**. Each robot **balances on its own two feet the entire time** — it walks in, leans over the
+bed, grips the sheet and draws it toward the head — with **no kinematic cheats** (no base pinning,
+teleporting or joint freezing), so every motion is one a real G1 could reproduce on hardware.
 
-This is a self‑contained example: it does **not** modify the `strands_robots`
-product package or Arm's Device Connect. It reuses the swarm driver from
-[`examples/unitree_g1_bed_making_g1_driver.py`](../unitree_g1_bed_making_g1_driver.py).
+Self‑contained: it does **not** modify the `strands_robots` product package or Arm's Device Connect,
+and **bundles its own copy** of the equal‑peer swarm driver ([`swarm_driver.py`](swarm_driver.py)) — a
+copy of the original from the [MuJoCo demo](../mujoco_bed_making/) — so it has no cross‑demo dependency.
 
-![Two G1s reach over the bed](media/reach_over_bed.png)
-
-| Walk in (learned policy) | Lean + reach (Pink IK arm + waist) |
-| --- | --- |
-| ![walk in](media/walk_in.png) | ![lean and reach](media/lean_reach.png) |
+![Two G1s make a bed](media/rl/bedmaking_scene.png)
 
 A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](media/isaac_bed_making.mp4)**.
 
-## What it shows
+## How it works, end to end
 
-* **Official, sim‑to‑real locomotion walk‑in.** Each G1 starts ~1.6 m off its side of
-  the bed and **walks in on Unitree's official
-  [`unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab) G1 velocity‑walk
-  policy** — a pretrained, Isaac‑Lab‑native whole‑body RL policy that Unitree ships to
-  deploy on real G1s. We reproduce its exact 480‑dim observation, joint order and PD gains
-  from the policy's own deploy config, and run the MLP **on the GPU via torch** (the DGX
-  Spark has no onnxruntime GPU provider). Two G1s stride to the bedside, upright.
-* **Free‑standing balance — no kinematic cheats.** This is the heart of the example: the
-  robots are **free‑base articulations** that stand, walk and reach **entirely under their
-  controllers**. There is **no base pinning, no teleporting, no joint freezing** — every
-  motion is one a real G1 could reproduce on hardware. At the bedside the velocity policy
-  keeps **balancing the legs in place** while the arms work.
-* **Established G1 manipulation IK (NVIDIA Pink/Pinocchio).** Each robot reaches with
-  **Isaac Lab's `pink_ik` controller** — a weighted‑QP IK over the **arm *and* the 3‑DOF
-  waist** — while the policy balances underneath.
-* **Real, physically‑simulated cloth.** A PhysX particle‑cloth sheet drapes over the bed
-  under gravity (the "MuJoCo recipe": featherlight + coarse + thick) with a render‑side
-  shell for visual thickness — not a scripted animation.
-* **Equal‑peer swarm coordination over Device Connect.** Both G1s pursue the goal state
-  *"the bed is made"*; they claim work, emit events, and ask for / offer help. With
-  `--broker` both peers register live on the Device Connect dashboard.
+1. **Walk in.** Each G1 spawns ~1 m off its side of the bed and walks to the bedside, **arms at its
+   sides**, under Unitree's official [`unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab)
+   G1 velocity‑walk policy — a pretrained, Isaac‑Lab‑native whole‑body RL policy Unitree ships for real
+   G1s. We reproduce its exact 480‑D observation, joint order and PD gains from the deploy config and run
+   the MLP **on the GPU via torch** (the DGX Spark has no onnxruntime GPU provider). The full 9‑inch‑
+   overhang sheet drapes during the walk.
+2. **Hand off to a whole‑body bed‑reach RL policy.** One **ambidextrous** policy owns all 29 body
+   joints, so it **balances on its own two feet while leaning over the bed to reach** — the loco‑
+   manipulation skill a walking‑balance policy can't hold (the deep bend throws the centre of mass past
+   the feet). Trained in Isaac Lab — full story in **[`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md)**.
+3. **Grip + draw the sheet** headward with the hand on the target's side — left for one robot, right for
+   its mirror, a natural same‑side motion — the policy balancing the whole body throughout.
 
-## Status — physically valid, with one known gap
+Coordination is real Device Connect: both G1s pursue the goal *"the bed is made,"* claim work, emit
+events, and ask for / offer help. With `--broker` both peers register live on the dashboard.
 
-The whole point of an Isaac Sim demo is **sim‑to‑real**: every motion must be something a
-real robot could do. So this example refuses kinematic shortcuts. What that buys, and what
-it costs, today:
+## The whole‑body bed‑reach RL policy &nbsp;→&nbsp; [`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md)
 
-* ✅ **Walk‑in works** — the official velocity policy stands and strides on its own (GPU).
-* ✅ **Free‑standing bedside balance works** — pelvis steady ~0.79 m, feet planted, the
-  policy balancing the legs with nothing held.
-* ⚠️ **Sustained bed‑making reach is WIP.** A deep bend‑over‑the‑bed reach shifts the
-  centre of mass past what a *walking*‑balance policy can hold, so the robots topple on the
-  deep reach (they take recovery steps backward and fall). A free‑standing humanoid needs
-  **whole‑body loco‑manipulation** to manipulate without falling — coordinating the reach
-  with the torso/legs. The roadmap: (1) a **push/drag‑while‑walking** strategy ("Toil
-  Mode") that uses the policy's *walking* strength to move the sheet, then (2) a **trained
-  loco‑manipulation RL policy** for the full motion. We deliberately do **not** pin or
-  fix the base to hide this — that would make the sim a cartoon and break sim‑to‑real.
+Bed‑making for a free‑standing humanoid is a **loco‑manipulation** problem: the deep bend over the bed
+throws the centre of mass past the feet, so a walking‑balance policy topples on the reach. The fix is a
+**single whole‑body RL policy** (legs + waist + arms; 29 joints; 50 Hz) that owns **balance *and* reach
+at once** — trained on Isaac Lab's locomotion RL rails with a station‑keeping reward (reach by leaning,
+stay planted), a bed‑obstacle constraint, and a FALCON‑style grip‑slip force load. It is
+**ambidextrous**: each robot reaches with the hand on the target's side, so the two flanking robots both
+pull the sheet headward as a natural same‑side motion rather than a cross‑body sweep. Free base, no
+kinematic cheats — physically valid for sim‑to‑real. The deployable policy is committed at
+[`rl/policy/`](rl/policy/); the method, its three iterations, results, training config and reproduce
+steps are in **[`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md)**.
 
-## Adapting NVIDIA's Pink IK to the Inspire hand
+| Reach over the bedside (ambidextrous) | Walk in, arms at the sides |
+| --- | --- |
+| ![ambidextrous reach](media/rl/ambidextrous_reach.png) | ![walk in](media/rl/walk_in_arms_at_sides.png) |
 
-Isaac Lab's `pink_ik` controller ships configured for the **Dex3** 3‑finger G1, but
-this demo requires the **Inspire** 5‑finger USD. The controller maps the URDF onto
-the sim robot **by joint name over the full joint set**, so three things were needed
-(all bundled, self‑contained):
+## Real‑to‑sim sensing with robotics‑connect &nbsp;→&nbsp; [unitree/g1](https://github.com/armwaheed/robotics-connect/tree/main/unitree/g1)
 
-1. **A matching URDF.** `unitree_ros`'s
-   `g1_29dof_rev_1_0_with_inspire_hand_DFQ.urdf` has the **same 53 actuated joint
-   names** as the Isaac Lab Inspire USD. We ship a **kinematics‑only** copy
-   (`assets/g1_inspire_kin.urdf`, visual/collision geometry stripped — Pinocchio
-   needs only the kinematic tree, and it avoids a mesh‑loading binding bug).
-2. **Import order.** `eigenpy`/`pinocchio` must be imported **before** the Isaac
-   app launches, or the app shadows eigenpy's string‑vector converter and the
-   controller fails to build. `demo.py` does this at the top.
-3. The waist (3 DOF) is added to the IK so the torso can lean into the reach.
+A simulator doesn't fully expose a real robot's **sensor and effector envelope** — the G1's sensors are
+tilted, range‑limited and occluded by its own body in ways Isaac Sim won't tell you. We close that gap
+with **[robotics‑connect](https://github.com/armwaheed/robotics-connect/tree/main/unitree/g1)**, Arm's
+Unitree G1 EDU control stack, where each sensor is **characterized on the physical robot**:
+
+* the head **Intel RealSense** is calibrated to a **51.29° downward tilt** — it sees the floor and the
+  near bed, not the room, though a mattress edge is still resolvable 2–3 m out;
+* the crown **Livox MID‑360** LiDAR's **near‑field fidelity** (a surface reads cleanly at 0.4 m) and its
+  **self‑occlusions** (the robot's face‑frame blanks ±40–45° of azimuth, its chin blanks below −10°
+  elevation).
+
+[`perception.py`](perception.py) reproduces those exact characteristics in sim — a downward head camera
+and an Isaac `RayCaster` LiDAR carrying the real blind spots — so a bed‑detector trained in sim works on
+the hardware. That same on‑hardware ground truth also **cuts RL training cycles** by getting the rewards
+and constraints right up front (e.g. the arms‑at‑sides neutral is taken from the real walking policy's
+own default pose). See
+[`RL_WHOLE_BODY_REACH.md` §6](RL_WHOLE_BODY_REACH.md#6-closing-the-real-to-sim-gap-with-robotics-connect).
+
+## No kinematic cheats (why it's harder, and worth it)
+
+The whole point of an Isaac Sim demo is **sim‑to‑real**: every motion must be something a real robot
+could do. So this example refuses kinematic shortcuts — the robots are **free‑base articulations** that
+stand, walk and reach **entirely under their controllers**. **No base pinning, no teleporting, no joint
+freezing.** That makes balance‑while‑reach a genuine loco‑manipulation problem (the reason for the
+whole‑body RL policy above) rather than a scripted animation.
+
+## Real, physically‑simulated cloth
+
+A PhysX particle‑cloth sheet drapes over the bed under gravity (the "MuJoCo recipe": featherlight +
+coarse + thick) with a render‑side shell for visual thickness — not a scripted animation. It is built as
+a **quad** grid (not triangles): Isaac's auto particle‑cloth turns every mesh edge into a stiff stretch
+spring, so a triangulated grid locks into a rigid plate, while quads leave the diagonal as a soft shear
+spring and it drapes.
+
+**Rendering gotcha — cloth and robot together.** The robot articulation only renders its motion with
+**Fabric on** (`use_fabric=True`), but PhysX does **not** sync particle‑cloth deformation to Fabric. Per
+NVIDIA's forums, *mesh* updates do cross Fabric (point‑instancer ones don't), and our bedsheet is a
+`UsdGeom.Mesh` — so the demo runs `use_fabric=True` and **blits the live cloth positions** (from a PhysX
+tensor cloth‑view) **into the Fabric mesh points** each render. Both the moving robot and the deforming
+sheet show at once.
 
 ## Run it
-
-On the DGX Spark, with Isaac Lab:
 
 ```bash
 cd ~/workspaces/git/IsaacLab
@@ -88,8 +101,6 @@ PYTHONUNBUFFERED=1 ./isaaclab.sh -p \
     ~/workspaces/git/robots/examples/isaac_bed_making/demo.py --loopback --render
 ```
 
-Modes:
-
 | Flag | Effect |
 | --- | --- |
 | `--loopback` | Coordinate via an in‑process bus (offline, default). |
@@ -97,69 +108,44 @@ Modes:
 | `--no-device-connect` | Skip Device Connect entirely. |
 | `--gui` | Open the Isaac Sim window to watch live (instead of headless). |
 | `--render` | Capture frames and encode an mp4 into `artifacts/isaac_bed_making/`. |
-| `--no-walk` | Skip the learned approach‑walk (start at the bedside). |
-| `--walk-only` | Stop after the approach‑walk (to inspect locomotion). |
-| `--replay` | Make the bed with the **dataset motion replay** instead of closed‑loop Pink IK. |
-| `--replay-speed F` / `--lag S` | Replay playback speed / robot‑1 trail (with `--replay`). |
+| `--no-walk` | Spawn at the bedside (skip the approach‑walk). |
+| `--walk-only` | Stop after the approach‑walk (inspect locomotion). |
+| `--pink` | Legacy A/B: velocity‑walk + **NVIDIA Pink‑IK** stand‑and‑reach instead of the RL policy. |
+| `--replay` | Legacy: make the bed from a **recorded teleop trajectory** (`--replay-speed` / `--lag`). |
 
 ## Optional: real motion from teleoperation data (`--replay`)
 
-With `--replay`, the waist + both arms are driven from a recorded trajectory of a
-*real* teleoperated Unitree G1 making a bed — Source:
+With `--replay`, the waist + both arms are driven from a recorded trajectory of a *real* teleoperated
+Unitree G1 making a bed — source:
 [`unitreerobotics/G1_WBT_Brainco_Make_The_Bed`](https://huggingface.co/datasets/unitreerobotics/G1_WBT_Brainco_Make_The_Bed)
-(LeRobot v3.0, Apache‑2.0). Because the sim uses the actual Unitree G1 model, the
-recorded joint angles transfer 1:1. `tools/extract_trajectory.py` pulls one episode
-and writes the compact `data/bed_making_traj.npz` the demo replays. Regenerate it
-(needs `pip install pyarrow huggingface_hub numpy`; not needed just to run the demo):
-
-```bash
-python examples/isaac_bed_making/tools/extract_trajectory.py --episode 4
-```
-
-## Rendering: cloth and robot together (the gotcha)
-
-The robot articulation only renders its motion with **Fabric on** (Isaac Lab pushes
-link poses to the renderer only when `use_fabric=True`), but PhysX does **not** sync
-particle‑cloth deformation to Fabric. Per NVIDIA's forums, *mesh* updates do cross
-Fabric (only point‑instancer ones don't), and our bedsheet is a `UsdGeom.Mesh`. So
-the demo runs with `use_fabric=True` and **blits the live cloth positions** (read
-from a PhysX tensor cloth‑view) **into the Fabric mesh points** each render — both
-the moving robot and the deforming sheet show at once.
-
-The cloth is built as a **quad** grid (not triangles): Isaac's auto particle‑cloth
-turns every mesh edge into a stiff stretch spring, so a triangulated grid locks into
-a rigid plate, while quads leave the diagonal as a soft shear spring and it drapes.
+(LeRobot v3.0, Apache‑2.0). Because the sim uses the actual Unitree G1 model, the recorded joint angles
+transfer 1:1. `tools/extract_trajectory.py` pulls one episode into the compact
+`data/bed_making_traj.npz` the demo replays (regenerate with `pip install pyarrow huggingface_hub numpy`;
+not needed just to run the demo).
 
 ## Files
 
-| File | Role |
+| Path | Role |
 | --- | --- |
-| `demo.py` | Entry point: scene, learned walk‑in, base pin, Pink‑IK bed‑making, Device Connect, render. |
-| `locomotion.py` | `RLGymWalker` (Unitree rl_gym walk) + `LocomotionPolicy` (agile balance stance) + floating‑base setup. |
-| `manipulation.py` | `PinkArmIK` (NVIDIA Pink IK, arm + waist) + `apply_hand_friction` (rubberized hands). |
-| `cloth.py` | PhysX particle‑cloth bedsheet (quad grid) + tensor‑view read + Fabric/usdrt blit for rendering. |
+| `demo.py` | Entry point: scene, walk‑in, whole‑body RL bed‑reach (default), Device Connect, render. Legacy `--pink` / `--replay` paths. |
+| [`rl/`](rl/) | The whole‑body bed‑reach **RL package** (env, reward/force terms, training, eval, deployable policy) — see [`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md). |
+| `perception.py` | robotics‑connect‑calibrated **LiDAR + head‑camera** sensing (real‑to‑sim). |
+| `locomotion.py` | `VelocityWalker` (Unitree `unitree_rl_lab` velocity walk) + `BedReachPolicy` (our whole‑body reach policy) + floating‑base setup. |
+| `cloth.py` | PhysX particle‑cloth bedsheet (quad grid) + tensor‑view read + Fabric blit + render‑side thickness shell. |
 | `scene.py` | Scene geometry — two walk‑in G1s + bed + headboard + pillows + camera + sheet parameters. |
-| `replay.py` | (`--replay`) Drives waist + arms (+ Inspire fingers) from the recorded dataset trajectory. |
 | `coordination.py` | In‑process Device Connect swarm (loopback / real broker), wrapping the shared swarm driver. |
-| `behavior.py` | Per‑robot autonomous decision state machine (scaffolding for emergent ordering). |
-| `assets/g1_inspire_kin.urdf` | Kinematics‑only Inspire G1 URDF for the Pink IK solver. |
-| `policies/g1_rlgym_walk.pt` | Unitree `unitree_rl_gym` G1 walk policy (BSD‑3) + its `.yaml` deploy config. |
-| `data/bed_making_traj.npz` | Extracted real bed‑making trajectory (used by `--replay`). |
+| `behavior.py` | Per‑robot autonomous decision state machine (emergent ordering / help). |
+| `manipulation.py` | (legacy `--pink`) `PinkArmIK` (NVIDIA Pink IK, arm + waist) + `apply_hand_friction`. |
+| `replay.py` | (legacy `--replay`) Drives waist + arms (+ Inspire fingers) from the recorded dataset trajectory. |
 
 ## Status
 
-The learned walk‑in, the render reconciliation (robot + cloth both render), the
-upright base‑pin manipulation, the NVIDIA Pink IK (arm + waist) reach, the friction
-grasp, the cloth physics, and the Device Connect swarm all work end‑to‑end and are
-verified by watching rendered frames.
+The **walk‑in** (velocity policy, arms at sides), the **whole‑body ambidextrous bed‑reach RL policy**
+(verified in isolation — both‑handed, balanced over the bed, no topple), the **full‑overhang sheet
+drape‑during‑walk**, the cloth physics + rendering, and the Device Connect swarm all work.
 
-**Known next step:** the sheet does not yet end up spread convincingly flat — it
-starts folded back at the foot and the current grasp‑and‑pull doesn't fully flatten
-it over the mattress. This is cloth‑geometry / manipulation‑strategy tuning (the IK
-itself converges); a both‑hands grab + larger spread is the planned follow‑up.
-
-Other roadmap items (see the issue #2 continuation comments): head‑mounted‑camera
-coverage reported over Device Connect; a tolerant "good‑enough" goal; and, as a
-stretch, an imitation‑learning policy trained on the dataset rather than replayed,
-and a fully Isaac‑Lab‑native (`unitree_rl_lab`) walk once its rsl_rl version is
-reconciled.
+**In progress:** the **walk→reach handoff** is being finalized via a warm‑start retrain so the reach
+policy's neutral matches the at‑sides walk pose; then the robotics‑connect‑calibrated LiDAR/RGB
+*detect → approach → switch* behaviour layer, and sustained pull‑load robustness. See the issue #2
+continuation comments and
+[`RL_WHOLE_BODY_REACH.md` §8](RL_WHOLE_BODY_REACH.md#8-status--whats-next).
