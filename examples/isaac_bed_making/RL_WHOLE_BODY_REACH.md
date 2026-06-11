@@ -32,7 +32,7 @@ asymmetry is learned, balanced behaviour, not a stumble.*
 > *marginally* stable (robot 1 toppled): a **from-scratch retrain** on the velocity-walk's own arm neutral
 > reconverged to a stable basin ([§3.4](#34-iteration-4--from-scratch-retrain--the-two-g1-benchmark)).
 > Eye-verified across the full 195-frame demo. The open work is now **manipulation quality** — drawing the
-> sheet up to the pillows ([§8](#8-status--whats-next)). **This is a living document.**
+> sheet up to the pillows ([§9](#9-status--whats-next)). **This is a living document.**
 
 ---
 
@@ -49,7 +49,7 @@ But "apply, don't reinvent" is the default, not a limit — and three pieces her
 so we built them:
 - **An open NVIDIA problem, solved.** The 5-finger Inspire-hand G1 can't be given a free (mobile) base by
   the documented switch, and NVIDIA's own forum thread on exactly this is **unanswered**. We found a
-  reusable fix (a tiny override USD; [§7](#7-the-research--resources-we-reused)).
+  reusable fix (a tiny override USD; [§8](#8-the-research--resources-we-reused)).
 - **An Isaac Lab policy deployed *outside* its training env** — reverse-engineering the exact 151-D
   observation + action map so it runs in the two-robot demo, and making it **ambidextrous with no
   observation change** (the same-side trick) so two flanking robots both pull naturally.
@@ -229,7 +229,7 @@ toggling. *(The iteration-1 curve below is for reference — same rig, before th
 > **Honest caveats — and why they're here.** The balance/handoff is solved; **manipulation quality is the
 > open work.** In the benchmark the sheet is *drawn* but not yet crisply made — the Device Connect goal
 > reports 2/4 corners (`bed_made: False`), because the near corners are tugged a modest amount, not pulled
-> up to the headboard/pillows. The next iteration targets exactly that ([§8](#8-status--whats-next)). We
+> up to the headboard/pillows. The next iteration targets exactly that ([§9](#9-status--whats-next)). We
 > surface this on purpose: engineers should trust a result more, not less, when its limits are stated
 > plainly.
 
@@ -311,7 +311,32 @@ sim-to-real.
 
 ---
 
-## 7. The research & resources we reused
+## 7. The grip — an honest intermediate experiment
+
+Balancing *while* reaching is solved ([§3](#3-the-policy-in-four-iterations)–[§4](#4-result-eye-verified)). The **grip** — holding the cover and drawing it to the head — is the harder half, and it ran into a simulator wall the wider field has not cleanly solved either. This is the honest record of that experiment, through to a **working, eye-verified grip** (with one open edge — the draw without toppling); the dead ends are as informative as the result.
+
+**The wall: there is no off-the-shelf sim-to-real grasp of PhysX particle cloth.**
+
+1. **Friction grasp** — rubberized fingers close on the sheet. PhysX particle-cloth friction *slips*; a documented-unsolved limit (NVIDIA forum 332704: grippers penetrate + slip on particle cloth). It never holds through a drag.
+2. **Attach the cloth to the wrist** — a PhysX cloth attachment. Cloth ↔ **articulation-link** attachment is **unsupported** in Isaac Sim 5.1 / Lab 2.3 (IsaacLab #4291): it fires but never holds; the cover slides out of the hand.
+3. **Grab tabs + finger friction** — sew light rigid **tabs** into the cover via the one attachment that *is* supported (cloth ↔ **free rigid body**), and grip a tab by closing the fingers. It holds at contact, but the reaching hand **plows into the cluster of rigid tabs** and topples the free-base balancer before it even grabs.
+4. **The custom spring peel-off grip** (the current approach). Filter the tabs from the robot entirely (nothing to plow), and hold via a **compliant D6 spring joint** from the wrist to the nearest tab, with a **break-force** that peels the grip off above a load threshold. This keeps the physics honest: PhysX applies the spring as a real bilateral force, so the robot **feels the cover's load and must balance against it**, and an over-hard draw **mechanically releases** instead of yanking the robot over (requirement E) — no pin, no teleport, no kinematic freeze.
+
+**An experiment inside the experiment — the particle explosion.** Wiring the grip surfaced a solver detonation during the cover's drape — the cover wads up and the rigid tabs scatter across the bed:
+
+![Particle-solver explosion — featherlight rigid grab tabs go unstable and the PBD solver blows up: the cover wads up (top-left) and the white tabs scatter across the mattress and floor while the robots stand untouched.](media/rl/spring_grip_explosion.png)
+
+It was a *pre-existing* instability (the committed baseline exploded too), root-caused in isolation with a **no-robot probe that swept tab configurations in a single boot**: packing many **featherlight (3 × 10⁻⁴ kg) tabs is numerically unstable** — a tab is flung and the solver blows up — while the eye-verified-stable earlier density (21 tabs) holds (heavier tab mass fixes it independently). Restoring that density fixed it. A second, related trap: excluding the tab↔robot contact by adding the robot to *the tab's own particle collision-filter* silently broke that filter and re-detonated the solver — so that exclusion moved to a **separate PhysX collision group**, leaving the proven filter untouched. Both were found by *watching the render*, not the telemetry (which read a uniform, uninformative NaN): **verify by what the camera shows.**
+
+**The grip, verified.** With the cover stable, the grasp finally ran end-to-end (eye-verified). The robots walk in, balance, and **reach the cover** — a *hand-lock-free* reach to the live cover nearest each hand (committing a hand up front drove it outboard off the bed; a **5 cm lower bed** brought the grab edge into reach) — the **short-range hand sensor fires the grasp on contact** (gap ≈ 5–6 cm), and **the spring joint holds: the cover follows the hands as the robots move.** That is the first proof the mid-sim D6 joint is picked up by PhysX and transmits real load, with the **balance-loss release firing** (requirement E) when the draw turns dangerous. What remains is the **draw without toppling**: the sustained drag still pulls the balancing bipeds over before the cover reaches the head — the loco-manipulation *balance-under-sustained-load* problem (FALCON / force curriculum, [§8](#8-the-research--resources-we-reused)), a different problem from the grip and the open edge of this work.
+
+**What is and isn't sim-to-real here — stated plainly.** The spring grip's *holding, load and peel-off physics* are valid. Two parts are **not** transferable: the grab **tabs** are a stand-in for a simulator limitation, not a real effector; and selecting the **nearest tab from privileged cloth state** is knowledge a real hand does not have. (The grasp already only *fires* on a short-range hand proximity sensor, so the *decision* to grip transfers even though the *targeting* does not yet — replacing the privileged targeting with sensor-grounded targeting is the immediate next step.) So the spring grip is best read as a **legitimate "grip-lock" abstraction** — the same category as the kinematic *weld* the MuJoCo phase used — with honest dynamics layered on top, not a finished sim-to-real grasp.
+
+**The real fix is a different cloth model, and it has its own issue.** A thin PBD membrane has no volume to *enclose*, and a real hand grips a sheet by friction **+ enclosure** of a bunched wad. So the path to a genuinely transferable grasp is a **different cloth representation** — Newton/FEM or a volumetric/layered cloth — tracked in **[issue #5](https://github.com/armwaheed/robots/issues/5)** and run as a separate investigation. We will **replace the spring grip if and only if that representation beats it on transfer realism**; if it proves infeasible on this stack, the spring grip (with sensor-grounded targeting) stays as the honest abstraction.
+
+---
+
+## 8. The research & resources we reused
 
 The spine of this system is reused — found and applied. (The genuinely open problems we *did* have to
 build are in [§1](#1-how-it-was-built).)
@@ -332,7 +357,7 @@ build are in [§1](#1-how-it-was-built).)
 - **Kinematics-Aware Multi-Policy RL for Force-Capable Humanoid Loco-Manipulation (Unitree G1)** —
   three-stage decoupled control (upper-body manip + lower-body loco + a delta-command coordinator) with a
   force curriculum; a G1 pulls a heavily-loaded cart while balancing. *The route for the sustained
-  sheet-pull load ([§8](#8-status--whats-next)).* [arXiv 2511.21169](https://arxiv.org/abs/2511.21169)
+  sheet-pull load ([§9](#9-status--whats-next)).* [arXiv 2511.21169](https://arxiv.org/abs/2511.21169)
 - **NVIDIA Isaac Lab 2.3 — Whole-Body Control & teleoperation** (the *learn-to-reach-then-add-force*
   curriculum, and the low-level-WBC / high-level-task split we followed):
   [NVIDIA blog](https://developer.nvidia.com/blog/streamline-robot-learning-with-whole-body-control-and-enhanced-teleoperation-in-nvidia-isaac-lab-2-3/)
@@ -368,20 +393,25 @@ build are in [§1](#1-how-it-was-built).)
 
 ---
 
-## 8. Status & what's next
+## 9. Status & what's next
 
 **Done:** balance-while-reach (it.1) → planted bedside reach + grip-slip robustness (it.2) →
 ambidextrous same-side reach (it.3) → **from-scratch retrain on the walk neutral (it.4) — the two-G1
-benchmark.** Both robots now walk in, hand off, reach, grip and draw the sheet **balancing on their own
+benchmark.** Both robots walk in, hand off, reach, grip and draw the sheet **balancing on their own
 two feet, no topple** (eye-verified, full 195-frame demo). The **walk→reach handoff is solved.** Policy
-committed at [`rl/policy/`](rl/policy/).
+committed at [`rl/policy/`](rl/policy/). **The grip ([§7](#7-the-grip--an-honest-intermediate-experiment))
+now works end-to-end (eye-verified): the spring peel-off grip engages on a sensor-gated contact and the
+cover follows the hands** — the particle-explosion and reach-contact blockers are fixed.
 
 **Next — manipulation quality (the open work):**
-1. **Draw the sheet up to the pillows.** The benchmark *grips and tugs* the sheet but does not yet pull it
-   crisply to the head. Next: a longer/stronger headward draw so the cover reaches the pillows — **up and
-   over them if tractable, or at least up *to* them** if over-pillow proves too hard for the particle
-   cloth. The reach policy already supports the deeper/longer lateral draw; this is a behaviour-layer
-   trajectory + grip-hold question, not a new policy.
+1. **Draw without toppling (the open edge).** The grip holds and the cover follows the hands, but the
+   sustained headward drag still pulls the balancing robots over before the cover reaches the head (the
+   robots topple and drag the cover off the bed). This is the loco-manipulation *balance-under-sustained-
+   load* problem — a different problem from the grip. Behaviour-layer first (a softer/slower ramped draw,
+   an **earlier** balance-loss release, or a lower break-force so the grip peels before the yank); then,
+   if needed, retrain the load to **oppose the drag direction** via a smooth escalating force curriculum
+   (FALCON / Kinematics-Aware multi-policy, [§8](#8-the-research--resources-we-reused)). Once it holds, a
+   longer draw to take the cover **up to the pillows** (over them if tractable for the particle cloth).
 2. **Relax the "made" goal to a pillow-anchored corner test.** Extend each headboard "corner" to its
    **pillow**: a sheet corner counts as a **successful corner placement** when it is pulled within a
    **wider radius of the headboard-end mattress corner (out to the pillow)** — so a corner drawn up to a
@@ -390,7 +420,7 @@ committed at [`rl/policy/`](rl/policy/).
 3. **Sustained pull-load.** The real sheet is a *sustained, motion-opposing* load, harder than training's
    *random* toggling force. A **behaviour-layer "release if resistance is too high → retry / ask a peer"**
    (the decision belongs above the balance policy), and/or retrain the load to **oppose the drag
-   direction** via a smooth escalating force curriculum (FALCON / Kinematics-Aware multi-policy, [§7](#7-the-research--resources-we-reused)).
+   direction** via a smooth escalating force curriculum (FALCON / Kinematics-Aware multi-policy, [§8](#8-the-research--resources-we-reused)).
 4. **Wire the perception layer** — the robotics-connect-calibrated LiDAR/RGB
    ([§6](#6-closing-the-real-to-sim-gap-with-robotics-connect)) into the demo's *detect → approach →
    switch* behaviour layer.

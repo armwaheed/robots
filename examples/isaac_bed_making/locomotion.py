@@ -616,6 +616,13 @@ class BedReachPolicy:
         """The wrist link the active (same-side) hand uses — where the cloth grasp attaches."""
         return BEDREACH_LEFT_EE_BODY if self._active_is_left() else BEDREACH_RIGHT_EE_BODY
 
+    def active_wrist_pose_w(self):
+        """World pose (pos (3,), quat wxyz (4,)) of the active reaching hand's wrist link — used to
+        anchor the spring-grip joint's local frame (cloth.add_spring_grip) at grab time."""
+        ee_id = self.left_ee_id if self._active_is_left() else self.right_ee_id
+        pose = self.robot.data.body_pose_w[0, ee_id]
+        return pose[:3], pose[3:7]
+
     # ── helpers (mirror the walkers) ─────────────────────────────────────────────
     def ee_pos(self):
         """World position of the active (same-side) reaching hand."""

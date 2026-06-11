@@ -33,9 +33,9 @@ def _envf(name: str, default: float) -> float:
     return float(v) if v not in (None, "") else default
 
 # ── Bed (mattress) ──────────────────────────────────────────────────────────
-BED_SIZE = (2.0, 1.8, 0.66)
-BED_CENTER = (0.0, 0.0, 0.33)
-BED_TOP_Z = BED_CENTER[2] + BED_SIZE[2] / 2.0  # 0.66
+BED_SIZE = (2.0, 1.8, 0.61)   # height lowered 5 cm (0.66→0.61) so the cover's grab edge drops into the
+BED_CENTER = (0.0, 0.0, 0.305)  # balancing robots' reach; bottom stays on the floor (center = height/2)
+BED_TOP_Z = BED_CENTER[2] + BED_SIZE[2] / 2.0  # 0.61
 HEAD_X = -BED_SIZE[0] / 2.0  # -1.0
 FOOT_X = +BED_SIZE[0] / 2.0  # +1.0
 SIDE_Y = BED_SIZE[1] / 2.0   # 0.9

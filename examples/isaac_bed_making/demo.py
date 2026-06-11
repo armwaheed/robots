@@ -242,9 +242,14 @@ def main() -> int:
         tabs = clothmod.add_perimeter_grab_tabs(
             stage, sheet,
             depth=_tabf("BEDDEMO_TAB_DEPTH", 0.33),     # grippable band depth from each edge
-            stride_m=_tabf("BEDDEMO_TAB_STRIDE", 0.28),  # subsample spacing along the band
-            mass=_tabf("BEDDEMO_TAB_MASS", 0.0003))      # FEATHER-light: tab mass is irrelevant to the grip
-        mark(f"sewed {len(tabs)} rigid grab tabs around the cover perimeter (cloth↔rigid; the hand grips these)")
+            stride_m=_tabf("BEDDEMO_TAB_STRIDE", 0.35),  # ~21 tabs: the eye-verified-stable head_v12 density.
+            # Do NOT pack this toward ~0.28 (~39 tabs): the high tab-count × featherlight-mass combination is
+            # numerically unstable — a tab is flung and the particle solver detonates (the cover wads up and
+            # the tabs scatter). Verified in ~/.isaac/tab_probe.py; heavier tab mass also fixes it independently.
+            mass=_tabf("BEDDEMO_TAB_MASS", 0.0003),      # FEATHER-light: keeps the drape; stable at this density
+            robot_paths=[f"/World/envs/env_0/Robot_{i}" for i in (0, 1)])  # filter tabs from the robots (no plow-topple)
+        mark(f"sewed {len(tabs)} rigid grab tabs along the head edge "
+             f"(cloth↔rigid attachment; the hand holds them via the spring peel-off grip)")
 
     # ── manipulation: TWO-handed Pink IK + finger grips (or optional dataset replay) ──
     # Each G1 drives both arms (the right also owns the 3-DOF waist so it leans into the
@@ -448,7 +453,7 @@ def main() -> int:
         else:
             # Default RL path: the whole-body reach policy owns legs+waist+arms and balances the
             # robot from its hands-at-sides spawn — no walker, no scripted arm motion.
-            run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet)
+            run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet, tabs)
     else:
         diag("walk-only: standing at the bedside")
 
@@ -625,7 +630,7 @@ def run_bedmaking(manip, balance, coord, step, capture, diag, stage, cloth_view,
     capture()
 
 
-def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet):
+def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sheet, tabs):
     """Make the bed with the whole-body loco-manipulation RL policy (issue #2 RL session).
 
     By here the G1s have walked to the bedside (hands at their sides) and the sheet has draped. ONE
@@ -637,8 +642,10 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     teleport, no joint freeze — physically valid for sim-to-real.
 
     Each G1, flanking its side of the bed, reaches onto the sheet's near head-side edge, grips it
-    (a PhysX cloth attachment — the legitimate grip-lock; MuJoCo's grasp was likewise a kinematic
-    weld), and draws it toward the head. The target is aimed HEADWARD (world −x), which is base +y
+    (the custom SPRING PEEL-OFF grip: a compliant D6 spring joint from the wrist to a rigid tab sewn
+    into the cover — the robot feels the load and balances, and the grip peels off under an excessive
+    draw rather than toppling the robot), and draws it toward the head. The target is aimed HEADWARD
+    (world −x), which is base +y
     for robot 0 (−y side) and base −y for robot 1 (+y side): so robot 0 leads with its LEFT hand
     and robot 1 with its RIGHT — a natural same-side abduction for both, not the cross-body sweep
     one hand can't balance."""
@@ -670,8 +677,15 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     PULL_DZ = _envf("BEDDEMO_PULL_DZ", 0.03)   # slight lift as it draws, to ride over the bare mattress
     PULL_SECS = _envf("BEDDEMO_PULL_SECS", 3.0)  # draw
     HOLD_SECS = _envf("BEDDEMO_HOLD_SECS", 1.5)  # dwell at full extension so the gripped cloth catches up
-    # The grip is PHYSICAL: the cover is studded with rigid grab tabs (built in main via the supported
-    # cloth↔rigid attachment) and the hand grips a tab by closing its fingers — see do_grasp.
+    # The grip is the CUSTOM SPRING PEEL-OFF GRIP (cloth.add_spring_grip). The cover is studded with
+    # light rigid grab tabs (built in main via the supported cloth↔rigid attachment, and filtered from
+    # the robots so the reaching hand never plows into them). do_grasp creates a compliant D6 spring
+    # joint from the active wrist to the nearest tab: PhysX applies the spring as a real bilateral force
+    # so the robot feels the cover's load and must balance against it (sim-to-real, NOT a pin), and a
+    # break_force PEELS the joint off when the draw load gets dangerous (requirement E, physical let-go).
+    GRIP_K = _envf("BEDDEMO_GRIP_STIFFNESS", 500.0)   # spring stiffness (N/m) holding the tab to the wrist
+    GRIP_C = _envf("BEDDEMO_GRIP_DAMPING", 30.0)      # spring damping (N·s/m)
+    GRIP_BREAK = _envf("BEDDEMO_GRIP_BREAK", 45.0)    # peel-off load (N): the cover snags harder than this -> let go
 
     # Sensor-driven grasp DECISION (grasp.py): the reach policy is trusted with the motion; this
     # decides WHEN to close/open the physical cloth grip from a short-range hand sensor. We never
@@ -679,15 +693,51 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     SENSING_RANGE = _envf("BEDDEMO_SENSE_RANGE", 0.15)   # a real hand sensor sees nothing past a few cm
     CONTACT_GAP = _envf("BEDDEMO_CONTACT_GAP", 0.10)     # within this the cloth is in the hand -> grab
     SLIP_GAP = _envf("BEDDEMO_SLIP_GAP", 0.28)           # gripped but sensor lost it this far -> let go
+    SEEK_PRESS = _envf("BEDDEMO_SEEK_PRESS", 0.10)       # press the live-cloth seek target this far BELOW
+    #                                                      the cover so the descending hand pins it
     sensors = {i: graspmod.HandClothSensor(SENSING_RANGE) for i in (0, 1)}
     decide = {i: graspmod.GraspDecision(CONTACT_GAP, SLIP_GAP) for i in (0, 1)}
     recovering = {0: False, 1: False}   # set once a robot lets go on balance-loss (requirement E)
-    fgrip = {}                          # per-robot FingerGrip on the active hand (closes on the grab tab)
-    for i in (0, 1):                  # commit each robot to its headward-pull hand for the whole task
-        bedreach[i].hand_lock = HAND_LOCK[i]
+    fgrip = {}                          # per-robot FingerGrip on the active hand (closes for the grasp look)
+    grip_joint = {0: None, 1: None}    # per-robot spring-grip joint prim path while holding (None = released)
+    wrist_paths = {}                   # cache: (i, wrist_link_name) -> full prim path under the robot root
+    # NOTE: the seek runs with NO hand_lock (hand_lock stays None) so each hand can reach FREELY to the
+    # live cover wherever it settled — committing to the headward hand up front forced the hand outboard,
+    # off the bed, away from the cover (eye-verified spring_v8). do_grasp then LOCKS to whichever hand
+    # actually grabbed, so the PULL drives the gripping hand headward (not the old empty-hand sweep).
+
+    def wrist_path(i):
+        """Full USD prim path of robot i's active wrist link (body0 of the spring-grip joint). Resolved
+        by name from the robot subtree so it's robust to however the USD nests the links."""
+        link = bedreach[i].active_wrist_link()
+        key = (i, link)
+        if key not in wrist_paths:
+            from pxr import Usd
+            root = stage.GetPrimAtPath(f"/World/envs/env_0/Robot_{i}")
+            wrist_paths[key] = next(
+                (p.GetPath().pathString for p in Usd.PrimRange(root) if p.GetName() == link),
+                f"/World/envs/env_0/Robot_{i}/{link}")
+        return wrist_paths[key]
 
     def reach(i, z):                  # world-frame grip target (hand fixed by the one-sided clamp)
         return (REACH_X, sign[i] * REACH_Y, z)
+
+    def seek_target(i):
+        # Aim at the LIVE cover nearest the hand (re-evaluated each control step in run()), pressed
+        # slightly DOWN so the descending hand pins the cover to the bed instead of shoving the
+        # featherlight cloth away. This adapts to wherever the cover actually settled on the robot's
+        # side — the fixed grip point misses because the cover doesn't settle where it's authored
+        # (and the reach itself nudges it). Falls back to the fixed point until the cloth view is up.
+        if cloth_view is None:
+            return reach(i, GRIP_Z)
+        pts = clothmod.view_positions(cloth_view)
+        if pts.shape[0] == 0:
+            return reach(i, GRIP_Z)
+        h = np.asarray(bedreach[i].ee_pos())
+        same_side = pts[pts[:, 1] * sign[i] > -0.10]          # the cover on this robot's half of the bed
+        cand = same_side if same_side.shape[0] else pts
+        c = cand[int(np.argmin(np.linalg.norm(cand - h, axis=1)))]
+        return (float(c[0]), float(c[1]), float(c[2]) - SEEK_PRESS)
 
     def pull_to(i, frac):
         # World-frame headward draw, RAMPED from the grip point by ``frac`` (0→1). Easing the
@@ -709,18 +759,39 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         return pelvis_z < 0.45 or speed > 1.5 or abs(bx) > 1.4 or abs(by) > 1.9
 
     def do_grasp(i, gap):
-        # PHYSICAL grip: close the active Inspire hand around the rigid grab tab sewn into the cover.
-        # The tab is bound to the cloth via the supported cloth↔rigid attachment, so the closed,
-        # rubberized fingers holding the rigid tab drag the cover (rigid-on-rigid friction holds,
-        # unlike a friction grasp on soft particle cloth). No kinematic attachment to the hand.
+        # CUSTOM SPRING PEEL-OFF GRIP: create a compliant D6 spring joint from the active wrist to the
+        # NEAREST grab tab. Each tab's live position is its bound cloth node (read from the cloth view at
+        # the tab's vid), so we pick the tab closest to the hand without a separate rigid-body view. The
+        # spring's rest pose is the grab-time wrist→tab offset (local_pos0 in the wrist frame), so it
+        # engages with ~no jerk; PhysX applies it as a real force (the robot feels the cover and must
+        # balance) and break_force peels it off under a dangerous load. No kinematic attachment.
+        from isaaclab.utils.math import quat_rotate_inverse
+        pts = clothmod.view_positions(cloth_view)
         ah = bedreach[i].ee_pos()
-        print(f"[grip] r{i} GRASP (close fingers on tab) at hand=({ah[0]:.2f},{ah[1]:.2f},{ah[2]:.2f}) "
-              f"sensor_gap={gap:.3f} wrist={bedreach[i].active_wrist_link()}", flush=True)
-        fgrip[i].set(1.0)
+        h = np.asarray(ah, dtype=float)
+        tab_path, vid = min(
+            tabs, key=lambda tv: float(np.linalg.norm(pts[tv[1]] - h)) if tv[1] < pts.shape[0] else 1e9)
+        wp, wq = bedreach[i].active_wrist_pose_w()
+        node_t = torch.tensor(pts[vid], device=bedreach[i].device, dtype=torch.float32)
+        lp0 = quat_rotate_inverse(wq.unsqueeze(0), (node_t - wp).unsqueeze(0))[0]
+        grip_joint[i] = clothmod.add_spring_grip(
+            stage, f"/World/Grip_{i}", wrist_path(i), tab_path,
+            (float(lp0[0]), float(lp0[1]), float(lp0[2])),
+            stiffness=GRIP_K, damping=GRIP_C, break_force=GRIP_BREAK)
+        fgrip[i].set(1.0)   # close the hand for the grasp LOOK; the spring joint does the holding
+        # Now LOCK to the hand that grabbed (the seek ran unlocked, so the active hand = the one that
+        # reached the cover). The PULL then drives THIS gripping hand headward, dragging the attached
+        # cover — not the empty other hand. Read _active_is_left BEFORE assigning (hand_lock is still None).
+        bedreach[i].hand_lock = "left" if bedreach[i]._active_is_left() else "right"
+        print(f"[grip] r{i} GRASP — spring joint wrist→{tab_path.split('/')[-1]} at "
+              f"hand=({ah[0]:.2f},{ah[1]:.2f},{ah[2]:.2f}) sensor_gap={gap:.3f} "
+              f"K={GRIP_K:.0f} break={GRIP_BREAK:.0f}N wrist={bedreach[i].active_wrist_link()}", flush=True)
 
     def do_release(i, why):
-        print(f"[grip] r{i} RELEASE ({why})", flush=True)
+        clothmod.remove_grip(stage, grip_joint[i])   # peel the spring grip (idempotent if PhysX broke it)
+        grip_joint[i] = None
         fgrip[i].set(0.0)
+        print(f"[grip] r{i} RELEASE ({why})", flush=True)
 
     def sheet_report(label):
         cw = clothmod.corner_world_positions(cloth_view, sheet) if cloth_view is not None else {}
@@ -746,10 +817,9 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         """Drive the trusted reach policy to ``tgt_fn(i)`` for n_ctl steps. ``mode``:
         'seek' = grab the instant the hand sensor reports contact; 'pull' = release if the grip
         slipped OR the drag is toppling the robot. The policy owns the whole-body motion throughout."""
-        for i in (0, 1):
-            _aim(i, tgt_fn)
         for s in range(n_ctl):
             for i in (0, 1):
+                _aim(i, tgt_fn)         # re-aim EACH step so a live (cloth-tracking) target follows the cover
                 bedreach[i].act()       # the policy owns the whole body (legs balance, arms reach)
             step(DECIMATION)
             if mode and cloth_view is not None:
@@ -774,11 +844,11 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         return max(1, int(t / (DECIMATION * SIM_DT)))   # 50 Hz control
 
     # 0) Hand off from the walk-in: the reach policy takes over balance (hands already at the sides
-    #    from the walk) and eases the leading hand up to a ready height above the draped cover.
-    #    Also sew a small rigid GRAB TAB into the cover at each robot's grab point — bound through the
-    #    SUPPORTED cloth↔rigid attachment (cloth↔articulation-link is unsupported in Sim 5.1, the real
-    #    reason a wrist attachment slips). The hand grips the tab with its fingers; the cover follows
-    #    the tab, so the drag load transmits cloth→tab→hand→robot (physical, no kinematic pinning).
+    #    from the walk) and eases the leading hand up to a ready height above the draped cover. The
+    #    rigid grab tabs are already sewn into the cover (in main, before the first step, via the
+    #    SUPPORTED cloth↔rigid attachment — cloth↔articulation-link is unsupported in Sim 5.1, the real
+    #    reason a wrist attachment slips) and filtered from the robots. do_grasp later springs the
+    #    active wrist to the nearest tab, so the drag load transmits cloth→tab→spring→robot (physical).
     for i in (0, 1):
         bedreach[i].reset()
         fgrip[i] = FingerGrip(bedreach[i].robot, HAND_LOCK[i], bedreach[i].device)
@@ -792,7 +862,7 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         coord.invoke(0, "pickUpBedSheet", corner="A")
         coord.invoke(1, "pickUpBedSheet", corner="B")
     print("[demo] reaching onto the sheet; gripping when the hand sensor feels cloth…", flush=True)
-    run(secs(2.6), lambda i: reach(i, GRIP_Z), mode="seek")
+    run(secs(2.6), seek_target, mode="seek")
     for i in (0, 1):
         print(f"[grip] r{i} closest approach this reach = {decide[i].min_true_gap:.3f} m "
               f"(gripped={decide[i].gripped})", flush=True)

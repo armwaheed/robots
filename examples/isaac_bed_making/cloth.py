@@ -259,12 +259,81 @@ def grasp(stage, cloth_path: str, body_path: str, attach_path: str,
         api.CreateEnableRigidSurfaceAttachmentsAttr(True)
     except Exception:
         pass
+    # CRITICAL for the rigid GRAB TABS: auto-filter collisions between the cloth and the attached rigid
+    # near the attachment. A tab sits COINCIDENT with the cloth particle it binds, and a cloth particle's
+    # contact offset is several cm, so without this the tab collides with that particle — the repulsion
+    # fights the attachment and a featherlight tab is flung to ~1e26 m, detonating the particle solver.
+    # Eye-verified: the committed manual FilteredPairsAPI against the particle SYSTEM is NOT sufficient
+    # here (both the committed baseline AND our runs exploded during the drape); this auto-attachment
+    # collision filtering is the documented mechanism for exactly this. Harmless for the hand grasp.
+    try:
+        api.CreateEnableCollisionFilteringAttr(True)
+        api.CreateCollisionFilteringOffsetAttr(max(float(bind_offset), 0.08))
+    except Exception:
+        pass
 
 
 def release(stage, attach_path: str) -> None:
     """Remove a grasp attachment (let go of the cloth)."""
     if stage.GetPrimAtPath(attach_path):
         stage.RemovePrim(attach_path)
+
+
+def add_spring_grip(stage, joint_path: str, wrist_path: str, tab_path: str, local_pos0,
+                    *, stiffness: float = 500.0, damping: float = 30.0,
+                    break_force: float = 45.0, break_torque: float = 1.0e9) -> str:
+    """The **custom spring peel-off grip** — how a balancing G1 holds the cover without a kinematic
+    cheat and lets go when the load gets dangerous.
+
+    Creates a PhysX **D6 joint** (``UsdPhysics.Joint`` = a generic 6-DoF joint) between the robot's
+    wrist link (``wrist_path``, body0) and a rigid grab tab sewn into the cover (``tab_path``, body1).
+    The three LINEAR axes get a compliant position **drive** (a spring with ``stiffness`` N/m + ``damping``
+    N·s/m) targeting zero displacement, so the tab is pulled to follow the wrist's grab-time relative
+    pose; the three ANGULAR axes are left FREE so the gripped cloth/tab can pivot without fighting the
+    hand. ``local_pos0`` (the tab anchor expressed in the wrist's local frame at grab time) makes the
+    spring's rest length the current gap, so the grip engages with ~no jerk.
+
+    Why this is sim-to-real valid (not a pin): PhysX applies the spring as a real bilateral force, so the
+    cover's weight + mattress friction load the wrist and the whole-body policy must BALANCE against it —
+    exactly the loco-manipulation work a real robot does. And ``break_force`` makes the joint **PEEL OFF**
+    when the linear constraint load exceeds the threshold (requirement E): if the cover snags and the draw
+    would yank the robot off its feet, the grip mechanically releases instead — a physical let-go, the
+    behaviour we previously had to detect heuristically. Returns the joint prim path.
+    """
+    from pxr import UsdPhysics
+
+    if stage.GetPrimAtPath(joint_path).IsValid():
+        stage.RemovePrim(joint_path)
+    joint = UsdPhysics.Joint.Define(stage, Sdf.Path(joint_path))
+    joint.CreateBody0Rel().SetTargets([Sdf.Path(wrist_path)])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path(tab_path)])
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(float(local_pos0[0]), float(local_pos0[1]), float(local_pos0[2])))
+    joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))   # anchor at the tab's centre
+    joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    # A maximal-coordinate loop joint: the tab is a free rigid body, not part of the arm's reduced
+    # articulation, so it must NOT be folded into the articulation solver.
+    joint.CreateExcludeFromArticulationAttr(True)
+    # Peel-off: PhysX disables the joint once the constraint force/torque exceeds these. We only peel on
+    # the LINEAR draw load, so leave the torque threshold effectively infinite.
+    joint.CreateBreakForceAttr(float(break_force))
+    joint.CreateBreakTorqueAttr(float(break_torque))
+    # Isotropic 3-axis linear spring toward the grab point (equal stiffness on each axis → a spring to a
+    # point, independent of frame orientation). Rotation axes are left undriven/unlocked = free.
+    for axis in ("transX", "transY", "transZ"):
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateTargetPositionAttr(0.0)
+        drive.CreateStiffnessAttr(float(stiffness))
+        drive.CreateDampingAttr(float(damping))
+    return joint_path
+
+
+def remove_grip(stage, joint_path: Optional[str]) -> None:
+    """Release the spring grip (do_release / balance-loss). Idempotent — safe even if PhysX already
+    broke the joint (the inert prim is simply removed) or the path is None."""
+    if joint_path and stage.GetPrimAtPath(joint_path).IsValid():
+        stage.RemovePrim(joint_path)
 
 
 def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
@@ -284,7 +353,7 @@ def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
     # A small SPHERE (NOT a box: box-shaped tabs detonate the particle solver — eye-verified head_v12;
     # spheres are stable). Cloth-coloured so it reads as part of the sheet. Roll-off is avoided by
     # keeping tabs on the flat HEAD edge (head_only) and, for the spring grip, filtering tabs from the
-    # robot so the hand never plows into them.
+    # robots (via collision groups — see filter_tabs_from_robots) so the hand never plows into them.
     sph = UsdGeom.Sphere.Define(stage, tab_path)
     sph.CreateRadiusAttr(float(radius))
     sph.CreateDisplayColorAttr().Set([Gf.Vec3f(0.86, 0.86, 0.92)])
@@ -307,7 +376,11 @@ def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
     # FILTER tab↔cloth COLLISION: the tab is bound to the cloth by the attachment, so it must NOT
     # also collide with the cloth particles — a rigid body coincident with particles it is attached
     # to makes the collision repulsion fight the attachment and the particle solver explodes (the
-    # head_v9 blow-up). The tab still collides with the HAND (not filtered), so the fingers can grip it.
+    # head_v9 blow-up). Keep this rel to the cloth + its particles ONLY. Adding the ROBOT here as well
+    # (to also stop the reaching hand plowing into the tabs) silently BROKE this filter and detonated
+    # the solver — eye-verified spring_v1: the cover wadded up and the tabs scattered across the bed.
+    # The tab↔robot exclusion is done SEPARATELY via collision groups (filter_tabs_from_robots), which
+    # leaves this proven filter untouched.
     fp = UsdPhysics.FilteredPairsAPI.Apply(prim)
     rel = fp.CreateFilteredPairsRel()
     rel.AddTarget(Sdf.Path(cloth_path))
@@ -317,15 +390,43 @@ def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
     return tab_path
 
 
+def filter_tabs_from_robots(stage, tab_paths: List[str], robot_paths: List[str]) -> None:
+    """Stop the grab tabs colliding with the robots, using PhysX **collision groups** rather than each
+    tab's ``FilteredPairsAPI``.
+
+    WHY collision groups and not the tab's filtered-pairs rel: the tab already filters its own cloth +
+    particles through that rel, and adding the robot subtree to the SAME rel silently broke the
+    cloth/particle filter and exploded the solver (eye-verified spring_v1). Collision groups are an
+    orthogonal mechanism, so the proven tab↔particle filter stays intact while we separately exclude
+    tab↔robot contact. With the spring peel-off grip the hand holds a tab through a D6 joint, not by
+    touching it, so removing tab↔robot contact only kills the reach-time plow-topple (the head_v12 wall:
+    the balancing robot toppled when its reaching hand plowed into the cluster of rigid head-edge tabs).
+    Build this once at scene-build time, before the first step.
+    """
+    tab_grp = UsdPhysics.CollisionGroup.Define(stage, Sdf.Path("/World/CollisionGroups/GrabTabs"))
+    rob_grp = UsdPhysics.CollisionGroup.Define(stage, Sdf.Path("/World/CollisionGroups/Robots"))
+    tinc = tab_grp.GetCollidersCollectionAPI().CreateIncludesRel()
+    for p in tab_paths:
+        tinc.AddTarget(Sdf.Path(p))
+    rinc = rob_grp.GetCollidersCollectionAPI().CreateIncludesRel()
+    for rp in robot_paths:                       # a robot root includes its whole collider subtree
+        rinc.AddTarget(Sdf.Path(rp))
+    # Filtering is symmetric — declaring it once on the tab group excludes every tab↔robot pair.
+    tab_grp.CreateFilteredGroupsRel().AddTarget(rob_grp.GetPath())
+
+
 def add_perimeter_grab_tabs(stage, sheet: "Bedsheet", prefix: str = "/World/GrabTab",
                             depth: float = 0.33, stride_m: float = 0.18, radius: float = 0.025,
                             mass: float = 0.0003, friction: float = 12.0, bind_offset: float = 0.05,
-                            head_only: bool = True):
+                            head_only: bool = True, robot_paths: Optional[List[str]] = None):
     """Stud the cover with light rigid grab tabs, each bound to the cloth, so the hand has something
-    rigid to physically grip wherever it closes — the motion policy's exact grab point isn't predictable,
-    so a wide, deep grippable band gives tolerance. Built ONCE at scene-build time (before the first
+    rigid to grip wherever it closes — the motion policy's exact grab point isn't predictable, so a
+    wide, deep grippable band gives tolerance. Built ONCE at scene-build time (before the first
     physics step) so the new rigid bodies are part of the initial state and don't shock a running solver.
-    Returns the list of tab prim paths.
+    Each tab is filtered from ``robot_paths`` (the hand holds it via the spring grip, not by colliding).
+    Returns a list of ``(tab_prim_path, vid)`` — ``vid`` is the cloth vertex the tab is sewn to, so the
+    demo can read each tab's LIVE position from the cloth view (``view_positions(...)[vid]``) to find the
+    nearest tab to a hand and to anchor the spring-grip joint, without a separate rigid-body view.
 
     ``head_only`` (default) restricts the band to the HEAD EDGE (the edge the robots draw up) at full
     ``depth``: tabs on the foot/side edges hang off the bed and drag the whole cover onto the floor
@@ -340,7 +441,7 @@ def add_perimeter_grab_tabs(stage, sheet: "Bedsheet", prefix: str = "/World/Grab
     di = max(1, round(depth / dx))                 # band depth in node units (x = head→foot)
     dj = max(1, round(depth / dy))
     sj = max(1, round(stride_m / dy))              # subsample along the width (y)
-    paths, k = [], 0
+    tabs, k = [], 0
     for j in range(0, ny + 1, sj):
         for i in range(nx + 1):
             if head_only:
@@ -349,13 +450,16 @@ def add_perimeter_grab_tabs(stage, sheet: "Bedsheet", prefix: str = "/World/Grab
                 in_band = (i < di or i > nx - di or j < dj or j > ny - dj)
             if not in_band:
                 continue
-            wp = pts[j * (nx + 1) + i]
+            vid = j * (nx + 1) + i
+            wp = pts[vid]
             add_grab_tab(stage, sheet.prim_path, f"{prefix}_{k}", f"{sheet.prim_path}_tab_{k}",
                          (wp[0], wp[1], wp[2]), radius=radius, mass=mass, friction=friction,
                          bind_offset=bind_offset)
-            paths.append(f"{prefix}_{k}")
+            tabs.append((f"{prefix}_{k}", vid))
             k += 1
-    return paths
+    if robot_paths:   # exclude tab↔robot collision via groups (NOT the tab's particle filter) — no plow-topple
+        filter_tabs_from_robots(stage, [p for p, _ in tabs], robot_paths)
+    return tabs
 
 
 # ── live deformed positions + rendering ────────────────────────────────────
