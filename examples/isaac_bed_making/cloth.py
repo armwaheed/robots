@@ -23,6 +23,7 @@ by **friction** (rubberized hands) instead — see ``manipulation.apply_hand_fri
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -351,14 +352,22 @@ def add_grab_tab(stage, cloth_path: str, tab_path: str, attach_path: str,
     up (which behaves semi-rigidly), and it is light enough not to distort the drape.
     """
     # A small SPHERE (NOT a box: box-shaped tabs detonate the particle solver — eye-verified head_v12;
-    # spheres are stable). Cloth-coloured so it reads as part of the sheet. Roll-off is avoided by
-    # keeping tabs on the flat HEAD edge (head_only) and, for the spring grip, filtering tabs from the
-    # robots (via collision groups — see filter_tabs_from_robots) so the hand never plows into them.
+    # spheres are stable). Roll-off is avoided by keeping tabs on the flat HEAD edge (head_only) and,
+    # for the spring grip, filtering tabs from the robots (via collision groups — see
+    # filter_tabs_from_robots) so the hand never plows into them.
     sph = UsdGeom.Sphere.Define(stage, tab_path)
     sph.CreateRadiusAttr(float(radius))
     sph.CreateDisplayColorAttr().Set([Gf.Vec3f(0.86, 0.86, 0.92)])
     UsdGeom.Xformable(sph).AddTranslateOp().Set(Gf.Vec3d(float(world_pos[0]), float(world_pos[1]), float(world_pos[2])))
     prim = sph.GetPrim()
+    # HIDE the tab from the renderer. It is a sim-only grip mechanism (a stand-in for the wad of cloth a
+    # real pinch grasp bunches up), NOT part of the visual bed — rendered, the studded spheres read as
+    # "little cubes on the sheet", an unacceptable artifact. Visibility is a pure USD/render attribute,
+    # orthogonal to physics (same MakeInvisible the demo uses on the pillow colliders), so the rigid body
+    # + cloth attachment + spring grip are all unchanged — the tab still does its physical job, unseen.
+    # Set BEDDEMO_TAB_VISIBLE=1 to render them for debugging.
+    if os.environ.get("BEDDEMO_TAB_VISIBLE", "0") not in ("1", "true", "True"):
+        UsdGeom.Imageable(prim).MakeInvisible()
     UsdPhysics.RigidBodyAPI.Apply(prim)
     UsdPhysics.CollisionAPI.Apply(prim)
     UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass))

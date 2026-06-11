@@ -170,6 +170,11 @@ SHEET_ACCORDION_GATHER = _envf("BEDDEMO_ACC_GATHER", 0.5)  # compress the gather
 SHEET_ACCORDION_WAVES = int(_envf("BEDDEMO_ACC_WAVES", 8))  # number of deep crumple folds
 SHEET_ACCORDION_AMP = _envf("BEDDEMO_ACC_AMP", 0.14)       # fold height (taller folds stack + hold the crumple)
 SHEET_PARTICLE_MASS = _envf("BEDDEMO_SHEET_MASS", 0.0007)  # per particle; a lighter cover is easier to draw up
+# Spring damping for the particle cloth. The deep 8-wave accordion starts with a lot of fold potential
+# energy; at the old default (1.5) the soft-spring lattice kept trading it back and forth — a visible
+# wobble/jiggle that never settled (user feedback on the pull_v* mp4). Strong damping bleeds that energy
+# so the cover drapes and SETTLES to a still rest state. Env-tunable to retune the drape↔settle balance.
+SHEET_DAMPING = _envf("BEDDEMO_SHEET_DAMPING", 10.0)
 
 # Camera: 3/4 view framing the whole bed (head + foot), both robots.
 CAM_EYE = (3.9, -3.5, 2.7)

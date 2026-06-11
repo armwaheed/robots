@@ -224,7 +224,8 @@ def main() -> int:
         accordion_gather=scenemod.SHEET_ACCORDION_GATHER,
         accordion_waves=scenemod.SHEET_ACCORDION_WAVES,
         accordion_amp=scenemod.SHEET_ACCORDION_AMP,
-        particle_mass=scenemod.SHEET_PARTICLE_MASS)
+        particle_mass=scenemod.SHEET_PARTICLE_MASS,
+        damping=scenemod.SHEET_DAMPING)   # strong damping so the accordion settles instead of jiggling
     # Give the sheet VISUAL THICKNESS: the particle cloth is a single-layer membrane
     # (renders thin), so we drive a separate closed double-layer slab from the same
     # live particle positions each frame and hide the membrane (physics unchanged).
@@ -246,7 +247,7 @@ def main() -> int:
             # Do NOT pack this toward ~0.28 (~39 tabs): the high tab-count × featherlight-mass combination is
             # numerically unstable — a tab is flung and the particle solver detonates (the cover wads up and
             # the tabs scatter). Verified in ~/.isaac/tab_probe.py; heavier tab mass also fixes it independently.
-            mass=_tabf("BEDDEMO_TAB_MASS", 0.0003),      # FEATHER-light: keeps the drape; stable at this density
+            mass=_tabf("BEDDEMO_TAB_MASS", 0.001),       # ~cloth-particle mass: heavier tabs settle (don't buzz) + are hidden now
             robot_paths=[f"/World/envs/env_0/Robot_{i}" for i in (0, 1)])  # filter tabs from the robots (no plow-topple)
         mark(f"sewed {len(tabs)} rigid grab tabs along the head edge "
              f"(cloth↔rigid attachment; the hand holds them via the spring peel-off grip)")
@@ -353,6 +354,25 @@ def main() -> int:
     fabric_points = clothmod.make_fabric_points(shell.prim_path)
     if fabric_points is None:
         print("[demo] WARNING: cloth not in Fabric — sheet deformation may not render", flush=True)
+
+    # Cloth settle probe (DIAGNOSTIC, opt-in via BEDDEMO_SETTLE_PROBE): the robots are still at their
+    # far spawn here, so the cover is UNTOUCHED — this isolates the drape→settle from any robot contact.
+    # It reports the max particle frame-to-frame displacement, which decays toward ~0 once the cover
+    # comes to rest and stays high if it sloshes (the user-reported jiggle). Off by default (adds settle
+    # time); set BEDDEMO_SETTLE_PROBE=1 to measure.
+    if os.environ.get("BEDDEMO_SETTLE_PROBE"):
+        prev_pts = None
+        for s in range(int(2.5 / (DECIMATION * sim_dt))):
+            balance()                       # robots just stand at the far spawn; the cloth settles on its own
+            step(DECIMATION)
+            pts = clothmod.view_positions(cloth_view)
+            if prev_pts is not None and pts.shape == prev_pts.shape:
+                disp = float(np.max(np.linalg.norm(pts - prev_pts, axis=1)))
+                if s % 3 == 0:
+                    print(f"[cloth] settle t={state['t']:.2f}s max_step_disp={disp * 100:.2f}cm", flush=True)
+            prev_pts = pts
+            if s % 2 == 0:
+                capture()
 
     body_ids = {}
 
@@ -673,7 +693,7 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     REACH_X = _envf("BEDDEMO_REACH_X", scenemod.SHEET_HEAD_X)
     APPROACH_Z = _envf("BEDDEMO_APPROACH_Z", TOP + 0.14)   # hover above the cover first (no contact)
     GRIP_Z = _envf("BEDDEMO_GRIP_Z", TOP + 0.0)            # descend ONTO the cover so the hand contacts it
-    PULL_DX = _envf("BEDDEMO_PULL_DX", -0.30)  # headward draw (world −x); one-sided clamp caps the hand ~at the pillow line (x≈-0.58)
+    PULL_DX = _envf("BEDDEMO_PULL_DX", -0.26)  # headward draw (world −x); one-sided clamp caps the hand ~at the pillow line (x≈-0.58)
     PULL_DZ = _envf("BEDDEMO_PULL_DZ", 0.03)   # slight lift as it draws, to ride over the bare mattress
     PULL_SECS = _envf("BEDDEMO_PULL_SECS", 3.0)  # draw
     HOLD_SECS = _envf("BEDDEMO_HOLD_SECS", 1.5)  # dwell at full extension so the gripped cloth catches up
@@ -683,9 +703,14 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     # joint from the active wrist to the nearest tab: PhysX applies the spring as a real bilateral force
     # so the robot feels the cover's load and must balance against it (sim-to-real, NOT a pin), and a
     # break_force PEELS the joint off when the draw load gets dangerous (requirement E, physical let-go).
-    GRIP_K = _envf("BEDDEMO_GRIP_STIFFNESS", 500.0)   # spring stiffness (N/m) holding the tab to the wrist
-    GRIP_C = _envf("BEDDEMO_GRIP_DAMPING", 30.0)      # spring damping (N·s/m)
-    GRIP_BREAK = _envf("BEDDEMO_GRIP_BREAK", 45.0)    # peel-off load (N): the cover snags harder than this -> let go
+    # Softened + early-peeling vs spring_v9 (there the draw toppled the balancing bipeds before the
+    # cover reached the head): a compliant 280 N/m spring lets the cover follow without a yank, and a
+    # 24 N peel-off (the deterministic SOFTWARE peel below — PhysX's break_force is not guaranteed to
+    # fire on a DRIVE constraint, so we mirror it ourselves — and PhysX's break_force as a backstop)
+    # lets go just under the load that drags a leaning free-base G1 off its feet: progress, no topple.
+    GRIP_K = _envf("BEDDEMO_GRIP_STIFFNESS", 280.0)   # spring stiffness (N/m) holding the tab to the wrist
+    GRIP_C = _envf("BEDDEMO_GRIP_DAMPING", 22.0)      # spring damping (N·s/m)
+    GRIP_BREAK = _envf("BEDDEMO_GRIP_BREAK", 24.0)    # peel-off load (N): the cover snags harder than this -> let go
 
     # Sensor-driven grasp DECISION (grasp.py): the reach policy is trusted with the motion; this
     # decides WHEN to close/open the physical cloth grip from a short-range hand sensor. We never
@@ -700,6 +725,8 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     recovering = {0: False, 1: False}   # set once a robot lets go on balance-loss (requirement E)
     fgrip = {}                          # per-robot FingerGrip on the active hand (closes for the grasp look)
     grip_joint = {0: None, 1: None}    # per-robot spring-grip joint prim path while holding (None = released)
+    grip_state = {0: None, 1: None}    # per-robot {vid, lp0, K}: the gripped tab + spring rest, for the load read
+    grab_pose = {0: None, 1: None}     # per-robot world hand pose at grasp — the pull ramps FROM here (no yank)
     wrist_paths = {}                   # cache: (i, wrist_link_name) -> full prim path under the robot root
     # NOTE: the seek runs with NO hand_lock (hand_lock stays None) so each hand can reach FREELY to the
     # live cover wherever it settled — committing to the headward hand up front forced the hand outboard,
@@ -740,23 +767,55 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         return (float(c[0]), float(c[1]), float(c[2]) - SEEK_PRESS)
 
     def pull_to(i, frac):
-        # World-frame headward draw, RAMPED from the grip point by ``frac`` (0→1). Easing the
-        # target headward gradually (rather than commanding the far endpoint at once) lets the
-        # policy WALK the cover up and the foot accordion feed slack, instead of lunging at a far
-        # point and yanking the rigid grip taut — the jerk that launched the free base (issue #2).
-        return (REACH_X + frac * PULL_DX, sign[i] * REACH_Y, GRIP_Z + frac * PULL_DZ)
+        # World-frame headward draw, RAMPED by ``frac`` (0→1) FROM THE ACTUAL GRAB POSE. The live seek
+        # grabs wherever the cover actually settled (footward of the authored head edge — pull_v1 grabbed
+        # at x≈0.76, y≈-1.03, not the REACH point at 0.15, ±0.80), so ramping from the authored point
+        # jumped the target ~0.65 m and yanked the rigid grip to 76 N → instant peel/topple. Starting at
+        # the grab pose and easing headward in x (holding the grab y, slight z lift) means no jump: the
+        # policy walks the cover up and the accordion feeds slack instead of lunging at a far point.
+        gx, gy, gz = grab_pose[i] if grab_pose[i] is not None else (REACH_X, sign[i] * REACH_Y, GRIP_Z)
+        return (gx + frac * PULL_DX, gy, gz + frac * PULL_DZ)
+
+    def torso_up_z(i):
+        # World-z component of the torso's own up-axis = R(root_quat)[2,2] = 1 − 2(x²+y²) for a wxyz
+        # quat. 1.0 = perfectly upright; cos(θ) at a θ-degree lean. A deep working squat keeps the
+        # TORSO upright (knees/hips bend, torso stays near-vertical), so this isolates a topple from
+        # the intended deep reach — unlike pelvis height, which conflates the two.
+        q = bedreach[i].robot.data.root_quat_w[0]
+        return 1.0 - 2.0 * float(q[1] ** 2 + q[2] ** 2)
 
     def balance_lost(i):
         # Requirement E (sim-to-real): a robot reads its own balance (IMU/proprioception). If the
-        # gripped drag is yanking it off its feet — pelvis dropping toward a fall, base launched out
-        # of a sane work envelope, or a violent base velocity — it LETS GO rather than be dragged
-        # over. NOT a kinematic cheat: nothing is moved; we only decide to release the cloth grip.
+        # gripped drag is tipping it off its feet — the torso TILTING past a recoverable lean, the
+        # pelvis dropping toward a fall, the base launched out of a sane envelope, or a violent base
+        # velocity — it LETS GO rather than be dragged over. NOT a kinematic cheat: nothing is moved;
+        # we only decide to release the cloth grip.
         d = bedreach[i].robot.data
         pelvis_z = float(d.root_pos_w[0, 2])
         bx, by = bedreach[i].base_xy()
         v = d.root_lin_vel_w[0]
         speed = float((v[0] ** 2 + v[1] ** 2) ** 0.5)
-        return pelvis_z < 0.45 or speed > 1.5 or abs(bx) > 1.4 or abs(by) > 1.9
+        # up_z < cos(39°)≈0.78 ⇒ torso tilted past a recoverable lean (the earliest reliable topple
+        # signal); the load-based SOFTWARE PEEL below should fire first, this is the balance backstop.
+        return torso_up_z(i) < 0.78 or pelvis_z < 0.45 or speed > 1.0 or abs(bx) > 1.4 or abs(by) > 1.9
+
+    def spring_load(i, pts=None):
+        # Magnitude (N) of the spring-grip force on robot i ≈ K·‖tab − rest‖, where ``rest`` is where
+        # the grab-time wrist→tab offset (lp0, in the wrist frame) would place the tab now — so an
+        # unloaded grip reads ~0. This is the bilateral load the draw puts on the wrist. We peel
+        # deterministically on it (a software mirror of break_force) and log it. 0 if not gripping.
+        st = grip_state[i]
+        if st is None or cloth_view is None:
+            return 0.0
+        if pts is None:
+            pts = clothmod.view_positions(cloth_view)
+        if st["vid"] >= pts.shape[0]:
+            return 0.0
+        from isaaclab.utils.math import quat_apply
+        wp, wq = bedreach[i].active_wrist_pose_w()
+        rest_w = wp + quat_apply(wq.unsqueeze(0), st["lp0"].unsqueeze(0))[0]
+        tab_w = torch.tensor(pts[st["vid"]], device=bedreach[i].device, dtype=torch.float32)
+        return float(st["K"] * torch.linalg.norm(tab_w - rest_w))
 
     def do_grasp(i, gap):
         # CUSTOM SPRING PEEL-OFF GRIP: create a compliant D6 spring joint from the active wrist to the
@@ -778,6 +837,8 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
             stage, f"/World/Grip_{i}", wrist_path(i), tab_path,
             (float(lp0[0]), float(lp0[1]), float(lp0[2])),
             stiffness=GRIP_K, damping=GRIP_C, break_force=GRIP_BREAK)
+        grip_state[i] = {"vid": vid, "lp0": lp0, "K": GRIP_K}   # the gripped tab + spring rest, for spring_load()
+        grab_pose[i] = bedreach[i].ee_pos()   # where the hand actually grabbed → the pull ramps FROM here (no yank)
         fgrip[i].set(1.0)   # close the hand for the grasp LOOK; the spring joint does the holding
         # Now LOCK to the hand that grabbed (the seek ran unlocked, so the active hand = the one that
         # reached the cover). The PULL then drives THIS gripping hand headward, dragging the attached
@@ -790,6 +851,8 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     def do_release(i, why):
         clothmod.remove_grip(stage, grip_joint[i])   # peel the spring grip (idempotent if PhysX broke it)
         grip_joint[i] = None
+        grip_state[i] = None
+        decide[i].slipped = True   # no longer holding (holding = gripped and not slipped) → stop re-checking
         fgrip[i].set(0.0)
         print(f"[grip] r{i} RELEASE ({why})", flush=True)
 
@@ -831,12 +894,31 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
                     if mode == "seek" and decide[i].on_reach(sensed, true_gap):
                         do_grasp(i, sensed)
                     elif mode == "pull" and decide[i].holding:
+                        load = spring_load(i, pts)
                         if not recovering[i] and balance_lost(i):
                             do_release(i, "losing balance — let go (requirement E)")
                             recovering[i] = True
                             bedreach[i].set_base_target([0.30, 0.0, -0.05])
+                        elif load > GRIP_BREAK:
+                            # Deterministic peel: the draw load exceeded the grip's hold (requirement E,
+                            # physical let-go) BEFORE it could drag the robot over — the whole point of a
+                            # compliant peel-off grip vs a rigid tether that topples the free-base biped.
+                            # The cloth is gone, so re-settle on the feet rather than keep lunging at the
+                            # (now empty) pull target — which otherwise drives the post-peel collapse (pull_v1).
+                            do_release(i, f"grip peeled — load {load:.0f}N over {GRIP_BREAK:.0f}N (requirement E)")
+                            recovering[i] = True
+                            bedreach[i].set_base_target([0.30, 0.0, -0.05])
                         elif decide[i].on_pull(sensed, true_gap):
                             do_release(i, "sensor lost the cloth (slipped)")
+                if mode == "pull" and s % cap == 0:
+                    for i in (0, 1):
+                        d = bedreach[i].robot.data
+                        bx, by = bedreach[i].base_xy()
+                        v = d.root_lin_vel_w[0]
+                        sp = float((v[0] ** 2 + v[1] ** 2) ** 0.5)
+                        print(f"[pull] r{i} hold={int(decide[i].holding)} load={spring_load(i, pts):4.0f}N "
+                              f"up_z={torso_up_z(i):.2f} pelvis_z={float(d.root_pos_w[0, 2]):.2f} "
+                              f"base=({bx:+.2f},{by:+.2f}) speed={sp:.2f} recov={int(recovering[i])}", flush=True)
             if s % cap == 0:
                 capture()
 
@@ -875,7 +957,7 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
         coord.invoke(1, "offerHelp", target=coord.peers[0].device_id, corner="A")
     print("[demo] drawing the cover up toward the pillows…", flush=True)
     RAMP = 6                                          # ease the headward target out over the stroke
-    for k in range(1, RAMP + 1):
+    for k in range(0, RAMP + 1):                      # start at frac=0 (the grab pose itself) → zero-jump handoff
         run(secs(PULL_SECS / RAMP), lambda i, fr=k / RAMP: pull_to(i, fr), cap=2, mode="pull")
     run(secs(HOLD_SECS), lambda i: pull_to(i, 1.0), cap=3, mode="pull")  # dwell so the gripped cloth catches up
     diag("drew the cover up")
