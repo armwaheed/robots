@@ -338,6 +338,36 @@ It was a *pre-existing* instability (the committed baseline exploded too), root-
 
 **The real fix is a different cloth model, and it has its own issue.** A thin PBD membrane has no volume to *enclose*, and a real hand grips a sheet by friction **+ enclosure** of a bunched wad. So the path to a genuinely transferable grasp is a **different cloth representation** — Newton/FEM or a volumetric/layered cloth — tracked in **[issue #5](https://github.com/armwaheed/robots/issues/5)** and run as a separate investigation. We will **replace the spring grip if and only if that representation beats it on transfer realism**; if it proves infeasible on this stack, the spring grip (with sensor-grounded targeting) stays as the honest abstraction.
 
+### 7.1 The divergent path — Newton FEM cloth (issue #5), parked as last-resort
+
+[Issue #5](https://github.com/armwaheed/robots/issues/5) spun out of the grip wall above to answer one question: **is there any cloth representation on this stack that supports a real, sim-to-real friction + enclosure grasp** — the thing PhysX particle cloth cannot do? The answer is **yes, in a different engine** — and that "different engine" is exactly why it is a *divergent* path, parked behind cheaper fixes rather than adopted now.
+
+![Newton FEM cloth — a force-limited, sensor-gated pinch grips the hanging hem and drags the whole cover headward across the bed; the grip holds (5.3 cm slip over a 45 cm stroke) with no attachment, no grab tabs, no kinematic pinning — the grasp itself is the contact physics.](media/rl/newton/newton_grippable_fabric_held_drag.gif)
+
+*A force-limited, **sensor-gated** pinch grips the hanging hem and hauls the whole cover headward across the bed — **grip held, 5.3 cm slip over a 45 cm stroke** — with no attachment, no tabs, no spring, no pinning. (Source mp4 `examples/isaac_cloth_grasp/spikes/out/newton_harness_v21_held_drag.mp4` on branch [`issue-5-cloth-grasp`](https://github.com/armwaheed/robots/tree/issue-5-cloth-grasp); the [#5 discovery comment](https://github.com/armwaheed/robots/issues/5#issuecomment-4677127342) embeds it.)*
+
+| grip (LIFT) | drag headward |
+| --- | --- |
+| ![Newton pinch grips the hanging hem off the mattress side](media/rl/newton/newton_grip_lift.png) | ![the pinch hauls the whole cover headward across the bed](media/rl/newton/newton_grip_drag.png) |
+
+**What was established (apples-to-apples, same pinch-and-drag protocol):**
+
+| representation | engine | frictional grasp through a drag |
+|---|---|---|
+| PBD particle cloth (the grip-wall baseline above) | PhysX 5.1 | ❌ penetrate + slip — reproduced, incl. the DexGarmentLab adhesion recipe; NVIDIA-documented-unsolved (forum 332704) |
+| **VBD FEM triangle cloth** | **Newton** | ✅ **holds the 45 cm drag** (force-limited, sensor-gated, no privileged state) |
+| FEM surface deformable (deformable-beta) | PhysX 5.1 | ❌ slips the full stroke — **NVIDIA staff corroborate**: rigid↔surface-deformable collision "not fully supported" (forum 359023) |
+
+Newton installs on the DGX Spark (GB10 / aarch64) from **stock pip wheels** — no source build. Library + harness + the four comparison spikes live under [`examples/isaac_cloth_grasp/`](https://github.com/armwaheed/robots/tree/issue-5-cloth-grasp/examples/isaac_cloth_grasp) on the `issue-5-cloth-grasp` branch.
+
+**Why it is divergent — and parked as the last resort, not the next step:**
+
+1. **It is a different simulator, not a swap.** This whole demo runs in Isaac Sim / PhysX (G1 + walk policy + Pink-IK); the Newton grasp runs in Newton (Warp / VBD) with a *free-pad force-servoed* gripper, **not the G1**. Bringing it under the robot means a cross-simulator integration — Isaac Lab 3.0-beta's two-way Newton-VBD coupling ([isaac-sim/IsaacLab#5443](https://github.com/isaac-sim/IsaacLab/pull/5443), `Isaac-Lift-Cloth-Franka`), or porting the G1 + policy into Newton — **days of work plus a sim-to-sim policy-gap risk**, the most expensive option on the table.
+2. **It does not address the demo's *current* blocker.** Tracing the newest two-G1 run (`cloth_v1`) shows the robots **topple during the deep low squat to reach a cover that settled too low, at load ≈ 0 N — they fall before any drag begins** (eye-verified; the grip itself fires and holds, `gripped=True`, gap 0.07, released only on "losing balance"). The Newton grip improves *grip quality*; the blocker is reach **posture**, which is upstream of grip quality. A better grasp does not stop a robot from falling over while squatting to reach.
+3. **So the cheaper fixes go first** ([#2 plan](https://github.com/armwaheed/robots/issues/2)): a **scene fix** (let the cover settle with grippable material in a reachable zone; grab the *lowest-resistance* location — the hanging hem or a top-of-mattress bunch), then, if a stable reach exists but the *drag* topples, a rescoped **retrain** in the validated Isaac pipeline (~30–45 min). The Newton path is the **eventual transfer-realism upgrade** — it also retires the spring grip's "floating-corner" artifact, since a real enclosing grasp holds a real bunched wad with nothing to float — pursued only if those fail, or once the bed-making works and we want the honest grasp for sim-to-real.
+
+In short: **issue #5 answered its research question** (a grippable cloth representation exists — Newton VBD), and is **parked, not abandoned**. It is the standing transfer-realism testbed and the engine-level grasp upgrade for when this stack migrates to Isaac Lab / Newton — not the lever that makes the current bipeds make the bed.
+
 ---
 
 ## 8. The research & resources we reused
