@@ -21,6 +21,8 @@ parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 parser.add_argument("--run_name", type=str, default="", help="Suffix for the run directory.")
 parser.add_argument("--resume_from", type=str, default=None,
                     help="Warm-start: load this model_*.pt checkpoint before training (continue/fine-tune).")
+parser.add_argument("--robot", type=str, default="g1_edu", choices=["g1_edu", "g1_29dof"],
+                    help="g1_edu = 23-DOF EDU (issue #3, transfer-valid); g1_29dof = issue #2 reference.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -41,13 +43,20 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rl.agents import BedReachPPORunnerCfg  # noqa: E402
-from rl.bed_reach_env_cfg import BedReachEnvCfg  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
-    env_cfg = BedReachEnvCfg()
+    # Select the robot variant: the 23-DOF EDU (issue #3, transfer-valid) or the 29-DOF reference.
+    if args_cli.robot == "g1_edu":
+        from rl.bed_reach_env_cfg_g1edu import BedReachEduEnvCfg as EnvCfg
+        experiment_name = "bed_reach_g1edu"
+    else:
+        from rl.bed_reach_env_cfg import BedReachEnvCfg as EnvCfg
+        experiment_name = "bed_reach_g1"
+
+    env_cfg = EnvCfg()
     if args_cli.num_envs is not None:
         env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.seed = args_cli.seed
@@ -55,6 +64,7 @@ def main():
         env_cfg.sim.device = args_cli.device
 
     agent_cfg = BedReachPPORunnerCfg()
+    agent_cfg.experiment_name = experiment_name
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
     agent_cfg.seed = args_cli.seed

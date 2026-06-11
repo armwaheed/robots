@@ -25,6 +25,8 @@ parser.add_argument("--video", action="store_true", help="Record an mp4.")
 parser.add_argument("--video_length", type=int, default=400, help="Frames to record (50 Hz control).")
 parser.add_argument("--zero", action="store_true", help="Run a zero policy (pre-train spawn sanity).")
 parser.add_argument("--tag", type=str, default="eval", help="Filename tag for the mp4.")
+parser.add_argument("--robot", type=str, default="g1_edu", choices=["g1_edu", "g1_29dof"],
+                    help="g1_edu = 23-DOF EDU (issue #3); g1_29dof = issue #2 reference.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.video:
@@ -49,13 +51,13 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rl.agents import BedReachPPORunnerCfg  # noqa: E402
-from rl.bed_reach_env_cfg import BedReachEnvCfg_PLAY  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EXPERIMENT = "bed_reach_g1edu" if args_cli.robot == "g1_edu" else "bed_reach_g1"
 
 
 def latest_checkpoint() -> str | None:
-    runs = sorted(glob.glob(os.path.join(HERE, "logs", "bed_reach_g1", "*")))
+    runs = sorted(glob.glob(os.path.join(HERE, "logs", EXPERIMENT, "*")))
     for run in reversed(runs):
         ckpts = sorted(glob.glob(os.path.join(run, "model_*.pt")), key=lambda p: int(p.split("_")[-1].split(".")[0]))
         if ckpts:
@@ -79,7 +81,12 @@ def encode(frames_dir: str, out_mp4: str, n: int) -> None:
 
 
 def main():
-    env_cfg = BedReachEnvCfg_PLAY()
+    if args_cli.robot == "g1_edu":
+        from rl.bed_reach_env_cfg_g1edu import BedReachEduEnvCfg_PLAY as EnvCfgPlay
+    else:
+        from rl.bed_reach_env_cfg import BedReachEnvCfg_PLAY as EnvCfgPlay
+
+    env_cfg = EnvCfgPlay()
     env_cfg.scene.num_envs = args_cli.num_envs
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
