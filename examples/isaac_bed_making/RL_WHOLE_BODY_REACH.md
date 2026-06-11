@@ -376,6 +376,9 @@ The spine of this system is reused — found and applied. (The genuinely open pr
 build are in [§1](#1-how-it-was-built).)
 
 **Research papers (the force-adaptive / whole-body-control ideas we applied)**
+- **SYMDEX: Morphologically Symmetric RL for Ambidextrous Bimanual Manipulation** — exploiting the G1's
+  bilateral symmetry so the policy reaches with whichever hand is on the target's side. *The basis for the
+  ambidextrous same-side reach (iteration 3).* [arXiv 2505.05287](https://arxiv.org/abs/2505.05287)
 - **FALCON: Learning Force-Adaptive Humanoid Loco-Manipulation** — adapting a whole-body policy to
   hand-force loads. *This is the basis for the grip-slip / sheet-tension training.*
   [arXiv 2505.06776](https://arxiv.org/abs/2505.06776)
@@ -397,6 +400,48 @@ build are in [§1](#1-how-it-was-built).)
   [NVIDIA blog](https://developer.nvidia.com/blog/streamline-robot-learning-with-whole-body-control-and-enhanced-teleoperation-in-nvidia-isaac-lab-2-3/)
 - **NVIDIA Isaac GR00T N1.6 sim-to-real** (WBC as the low-level loco-manipulation layer):
   [NVIDIA blog](https://developer.nvidia.com/blog/building-generalist-humanoid-capabilities-with-nvidia-isaac-gr00t-n1-6-using-a-sim-to-real-workflow/)
+
+**Cloth manipulation — the task references (the grip, [§7](#7-the-grip--an-honest-intermediate-experiment))**
+- **Seita et al. — Robot Bed-Making: Deep Transfer Learning of Pick Points on Fabric** — the classic
+  *grasp-corner → pull-to-frame-corner* bed-making formulation we follow.
+  [arXiv 1809.09810](https://arxiv.org/abs/1809.09810)
+- **Bodies Uncovered: Learning to Manipulate Real Blankets Around People via Physics Simulations** —
+  blanket manipulation learned in sim and transferred to a real mobile manipulator.
+  [arXiv 2109.04930](https://arxiv.org/abs/2109.04930)
+- **FlingBot: The Unreasonable Effectiveness of Dynamic Manipulation for Cloth Unfolding** (Ha & Song,
+  CoRL'21) — dual-arm pick-stretch-fling cloth context. [arXiv 2105.03655](https://arxiv.org/abs/2105.03655)
+- **SoftGym: Benchmarking Deep RL for Deformable Object Manipulation** (Lin et al., CoRL'20) — the
+  deformable-manipulation RL benchmark backdrop. [arXiv 2011.07215](https://arxiv.org/abs/2011.07215)
+- **Figure Helix-02 — "Bedroom Tidy"** — the one-learned-bimanual-system, no-scripted-handoffs bed-making
+  template our two-G1 benchmark is measured against.
+  [figure.ai](https://www.figure.ai/news/helix-02-bedroom-tidy)
+
+**Cloth representation & frictional grasp — the grip wall ([§7](#7-the-grip--an-honest-intermediate-experiment) / [§7.1](#71-the-divergent-path--newton-fem-cloth-issue-5-parked-as-last-resort), [issue #5](https://github.com/armwaheed/robots/issues/5))**
+- **Newton — open-source GPU physics engine** (NVIDIA / Google DeepMind / Disney, built on NVIDIA Warp,
+  integrating MuJoCo-Warp). Its **VBD FEM cloth** is the representation that holds a real frictional grasp
+  through a drag (issue #5), and it installs on the DGX Spark (GB10 / aarch64) from stock pip wheels.
+  [github.com/newton-physics/newton](https://github.com/newton-physics/newton) ·
+  [NVIDIA announce](https://developer.nvidia.com/blog/announcing-newton-an-open-source-physics-engine-for-robotics-simulation/) ·
+  [Isaac Lab Newton integration](https://isaac-sim.github.io/IsaacLab/main/source/experimental-features/newton-physics-integration/index.html)
+- **NVIDIA Warp** — the GPU-kernel substrate Newton and our cloth-grasp harness run on.
+  [github.com/NVIDIA/warp](https://github.com/NVIDIA/warp)
+- **Isaac Lab — two-way Newton-VBD cloth coupling** (`Isaac-Lift-Cloth-Franka`, `CoupledMJWarpVBDSolverCfg`)
+  — the upstream path to put Newton cloth under the robot when #2 migrates.
+  [isaac-sim/IsaacLab#5443](https://github.com/isaac-sim/IsaacLab/pull/5443)
+- **PhysX particle-cloth friction *slips*** — grippers penetrate + slip on particle cloth; the documented-
+  unsolved limit that forced the spring-grip workaround.
+  [NVIDIA forum 332704](https://forums.developer.nvidia.com/t/some-critical-issues-in-isaac-4-5-particle-cloth-that-prevent-realistic-cloth-simulation/332704)
+- **Rigid ↔ surface-deformable collision "not fully supported" + dynamic-friction-only** — why the PhysX
+  FEM surface-deformable grasp also slips (NVIDIA staff). [NVIDIA forum 359023](https://forums.developer.nvidia.com/t/359023)
+- **Grasping a PhysX deformable with an articulation gripper** — solves *contact*, not holding-through-
+  motion. [NVIDIA forum 366720](https://forums.developer.nvidia.com/t/unable-to-grasp-a-physx-deformable-body-using-an-articulation-based-gripper/366720)
+- **Cloth ↔ articulation-link attachment unsupported (Isaac Sim 5.1 / Lab 2.3)** — root cause of the
+  slipping wrist grip; the supported path is cloth ↔ free rigid body.
+  [IsaacLab #4291](https://github.com/isaac-sim/IsaacLab/issues/4291) ·
+  [discussion #4628](https://github.com/isaac-sim/IsaacLab/discussions/4628)
+- **DexGarmentLab — Dexterous Garment Manipulation** — the PBD particle-rigid adhesion + friction grasp
+  recipe we reproduced as the apples-to-apples PhysX baseline.
+  [arXiv 2505.11032](https://arxiv.org/abs/2505.11032)
 
 **NVIDIA forum threads / GitHub issues that directly unblocked us**
 - **Free-base Inspire-hand G1** — the stock `g1_29dof_inspire_hand.usd` ships fixed-base + gravity-off and
@@ -423,7 +468,9 @@ build are in [§1](#1-how-it-was-built).)
 **Platform & official code**
 - [Arm Learning Path — Isaac Sim + Isaac Lab RL on DGX Spark](https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_isaac_robotics/)
 - [NVIDIA Isaac Lab](https://github.com/isaac-sim/IsaacLab) · [Isaac Lab docs](https://isaac-sim.github.io/IsaacLab/) · [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
-- [Unitree `unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab) · [`unitree_ros` (G1 URDF)](https://github.com/unitreerobotics/unitree_ros)
+- [Unitree `unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab) · [`unitree_ros` (G1 URDF)](https://github.com/unitreerobotics/unitree_ros) · [`unitree_sim_isaaclab`](https://github.com/unitreerobotics/unitree_sim_isaaclab)
+- [Unitree **G1 WBT Brainco "Make The Bed"** teleop dataset](https://huggingface.co/datasets/unitreerobotics/G1_WBT_Brainco_Make_The_Bed) — the real-robot bed-making reference motion
+- Isaac Lab **Pink IK** reference (the differential-IK arm controller our manipulation layer follows): [`pink_controller_cfg.py`](https://github.com/isaac-sim/IsaacLab/blob/main/source/isaaclab_tasks/isaaclab_tasks/manager_based/locomanipulation/pick_place/configs/pink_controller_cfg.py) · [`fixed_base_upper_body_ik_g1_env_cfg.py`](https://github.com/isaac-sim/IsaacLab/blob/main/source/isaaclab_tasks/isaaclab_tasks/manager_based/locomanipulation/pick_place/fixed_base_upper_body_ik_g1_env_cfg.py)
 
 ---
 
