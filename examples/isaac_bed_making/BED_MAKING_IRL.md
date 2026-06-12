@@ -100,6 +100,29 @@ We pulled live readings from the robot (`robotics-connect` `lidar_sight` + `dept
   `BedPerception`) — the *same* numpy runs on the sim RayCaster cloud and this real `lidar_sight`
   cloud (the real-to-sim loop).
 
+### 4.1 In the master bedroom — perceiving the actual bed
+
+The robot is now standing in the **master bedroom**, at its fixed start pose: in front of the closed
+double doors (to the master bathroom), **facing the bed** ~1.5–2.5 m away across clear carpet. Here is
+what each sensor reports from that spot — each checked against ground-truth photos of the room.
+
+| Crown LiDAR (annotated, near-field) | Head RGB (down-tilt 51.29°) | Head depth (RealSense D435i) |
+|---|---|---|
+| ![bedroom lidar](media/irl/bedroom_lidar.jpg) | ![bedroom rgb](media/irl/bedroom_head_rgb.jpg) | ![bedroom depth](media/irl/bedroom_head_depth.jpg) |
+
+- **LiDAR (left).** `find_tables()` locks onto the **bed as a 0.68 m² flat plane at (1.44 m forward,
+  0.44 m left)** at mattress height, with the floor at z ≈ −0.78 m and the far window-wall at ~5 m —
+  exactly the room geometry (bed ahead and slightly left, headboard against the window).
+- **RGB (centre).** The down-tilted head camera frames the **bed's near edge** — dark frame, grey
+  fitted sheet, white mattress, the cream comforter draped over the side, brass feet on carpet — the
+  same bed seen in the room photos.
+- **Depth (right).** The bed edge and receding floor read from ~1.0 m out, **but the white speckle is
+  invalid depth — the stereo artifacts the IR projector leaves on textureless bedding and carpet.**
+  This is exactly why **hand placement is LiDAR-first**: the near-field LiDAR has none of those holes.
+
+So from its start pose the robot already sees the bed it has to make — a clean ~1.4 m approach on a
+clear path — which is what the walk-to-bed step (§9) drives toward.
+
 ---
 
 ## 5. Voice OUT — the robot speaks (verified on hardware)

@@ -253,23 +253,49 @@ def _load_rc_module(name: str, path: str):
     return module
 
 
+def _rc_base() -> Optional[str]:
+    """First robotics-connect checkout that has the locomotion module, else None."""
+    for base in (os.environ.get("ROBOTICS_CONNECT_DIR", ""),
+                 "/home/unitree/robotics-connect",
+                 str(Path.home() / "workspaces/git/robotics-connect")):
+        if base and os.path.isfile(os.path.join(base, "unitree", "g1", "locomotion", "g1_locomotion.py")):
+            return base
+    return None
+
+
 def _import_locomotion_modules():
     """Import robotics-connect's locomotion layer (G1 binding + abstract Sim), or raise."""
-    candidates = [
-        os.environ.get("ROBOTICS_CONNECT_DIR", ""),
-        "/home/unitree/robotics-connect",
-        str(Path.home() / "workspaces/git/robotics-connect"),
-    ]
-    for base in candidates:
-        if not base:
-            continue
-        g1 = os.path.join(base, "unitree", "g1", "locomotion", "g1_locomotion.py")
-        lib = os.path.join(base, "lib", "locomotion.py")
-        if os.path.isfile(g1):
-            loco_lib = _load_rc_module("robotics_connect_locomotion", lib)
-            g1mod = _load_rc_module("robotics_connect_g1_locomotion", g1)
-            return g1mod, loco_lib
-    raise ImportError("robotics-connect locomotion not found (set ROBOTICS_CONNECT_DIR)")
+    base = _rc_base()
+    if base is None:
+        raise ImportError("robotics-connect locomotion not found (set ROBOTICS_CONNECT_DIR)")
+    loco_lib = _load_rc_module("robotics_connect_locomotion", os.path.join(base, "lib", "locomotion.py"))
+    g1mod = _load_rc_module("robotics_connect_g1_locomotion",
+                            os.path.join(base, "unitree", "g1", "locomotion", "g1_locomotion.py"))
+    return g1mod, loco_lib
+
+
+def _wire_controller_abort(loco, iface: str) -> None:
+    """Wire the handheld controller's any-button abort into ``loco`` (best-effort).
+
+    The watcher halts the *software* routine (stop + hold balance) — it is NOT the
+    e-stop; the controller's firmware damping and the robot's power/e-stop are. If the
+    controller module is missing the routine still runs and that hardware stop applies."""
+    base = _rc_base()
+    remote_py = os.path.join(base or "", "unitree", "g1", "controller", "g1_remote.py")
+    if not base or not os.path.isfile(remote_py):
+        print("[human-partner] controller module unavailable; rely on the hardware e-stop.")
+        return
+    try:
+        g1_remote = _load_rc_module("robotics_connect_g1_remote", remote_py)
+        remote = g1_remote.G1Remote(iface=iface, init_dds=False)  # locomotion already inited DDS
+        remote.connect()
+        remote.wait_until_armed(timeout_s=3.0)
+        loco.set_abort_source(remote.aborted)
+        loco.remote = remote  # let the routine poll abort between steps
+        print("[human-partner] controller abort ARMED — any button halts the routine "
+              "(NOT the e-stop; keep the hardware stop in reach).")
+    except Exception as exc:
+        print(f"[human-partner] controller abort unavailable ({exc!r}); hardware e-stop still applies.")
 
 
 def make_locomotion(iface: Optional[str] = None, prefer_real: bool = True):
@@ -286,6 +312,7 @@ def make_locomotion(iface: Optional[str] = None, prefer_real: bool = True):
         try:
             loco = g1mod.G1Locomotion(iface=iface or "eth0")
             loco.connect()
+            _wire_controller_abort(loco, iface or "eth0")
             return loco
         except Exception as exc:
             print(f"[human-partner] real locomotion unavailable ({exc!r}); using sim.")
@@ -658,10 +685,18 @@ class HumanPartnerCoordinator:
         self.announce("Walking to the bed.")
         loco.stand()
         result = loco.walk_forward(distance_m, vmax=vmax)
+        if result == "aborted":
+            self.announce("Aborting.")
+            self.agent.set_status("aborted")
         arrived = result is None
         self.agent.log_action(kind="approach", summary=f"walked ~{distance_m:.1f} m to the bedside",
                               arrived=arrived, result=result)
         return {"approached": True, "arrived": arrived, "result": result}
+
+    def aborted(self) -> bool:
+        """True once the human presses the controller to abort (real robot only)."""
+        remote = getattr(self._locomotion, "remote", None)
+        return bool(remote and remote.aborted())
 
     # -- the synchronous bridge the sim/behaviour loop uses --------------------------------------
     def attempt_corner(self, corner: str, signals: ReachSignals, listen_seconds: float = 6.0) -> dict:
@@ -741,6 +776,9 @@ def _run_demo() -> int:
     print(f"\n--- approach ---\n   {coord.approach_bed(distance_m=1.0)}")
     signals = _demo_signals()
     for corner in BED_CORNERS:
+        if coord.aborted():
+            print("\n!!! ABORTED by controller — halting the routine.")
+            break
         print(f"\n--- corner {corner} ---")
         out = coord.attempt_corner(corner, signals[corner])
         verdict = ("solo" if not out["asked"] else f"asked → {out['outcome']}")
