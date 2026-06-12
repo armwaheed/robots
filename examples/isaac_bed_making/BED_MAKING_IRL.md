@@ -146,9 +146,25 @@ closed process or intercepting the encrypted cloud stream — not something to d
 |---|---|
 | ![Unitree app — Wake-up Conversation Mode](media/irl/unitree_app_wakeup_mode.png) | The toggle that lets the closed firmware open `pcm0c` on the wake word — confirmed by watching the capture substream go `RUNNING` while a person spoke. |
 
-We have **asked the Unitree engineers** for the supported way to read the array from userspace, and
-filed the full reproduction (above) so a future session can pick it up. The mic findings are also
-documented in the voice module's [`README.md`](https://github.com/armwaheed/robotics-connect/tree/g1-audio-module/unitree/g1/voice).
+We filed the full reproduction (above) and took it to **Unitree engineering support** for the
+supported way to read the array from userspace. The mic findings are also documented in the voice
+module's [`README.md`](https://github.com/armwaheed/robotics-connect/tree/g1-audio-module/unitree/g1/voice).
+
+### 6.1 Unitree engineering support's verdict — the question is now closed
+
+Unitree's engineering support confirmed the result outright (support work order, June 2026): **the
+G1's microphone is not exposed as a developer interface.** The only supported speech route is the
+robot's built-in automatic speech recognition, together with the other voice-UI features documented
+under [VuiClient_Service](https://support.unitree.com/home/en/G1_developer/VuiClient_Service). To run
+your own speech recognition — or anything that needs the raw array — their guidance is to **connect an
+external microphone/speaker array through the USB-C ports** instead of tapping the built-in one.
+
+So the closed-system result above is *by design*, not a bug to root around — which settles why the
+human loop is built the way §7 describes. Rather than crack the onboard mic, we route the human into
+**Device Connect** as their own agent (a Bluetooth headset + a sidecar that runs the ASR); the robot
+asks over its speaker (§5, verified) and hears over the fabric. (An external USB-C mic array would
+also satisfy Unitree's supported path, and the same coordination layer would accept it as a drop-in
+audio source — see §7.)
 
 ---
 
@@ -182,8 +198,10 @@ flowchart LR
 ```
 
 This keeps the issue's intent — *Device Connect orchestrates the human interaction* — while sidestepping
-the closed on-board mic. (If/when Unitree exposes the array, the same coordination layer swaps the
-sidecar's headset source for the robot's mic with no logic change.)
+the closed on-board mic. And per Unitree engineering support (§6.1) the built-in array will *stay*
+closed by design, so this isn't a stopgap: if a fully on-robot listen path is ever wanted, Unitree's
+supported route is an **external USB-C mic/speaker array**, and the same coordination layer swaps the
+sidecar's headset source for it with no logic change.
 
 ### 7.1 Built and verified live — both devices on the dashboard
 
@@ -275,7 +293,10 @@ the dashboard, the out-loud ask → headset answer → grounded reply verified o
 2. Deploy the 23-DOF policy to the EDU (map Isaac ↔ SDK joint order for parity) for the bedside reach.
 3. Brainco sensor-gated grip on the real sheet; sustained pull-load robustness (the open manipulation
    edge from the sim writeup).
-4. The on-board mic — pending Unitree's guidance on reading the array from userspace.
+4. The on-board mic is a settled question (§6.1): Unitree engineering support confirmed it is **not** a
+   developer interface — built-in ASR only, or an external USB-C mic/speaker array for custom speech.
+   The human loop intentionally doesn't depend on it; an external USB-C array stays an option if a
+   fully on-robot listen path is ever wanted.
 
 *Hardware: Unitree G1 EDU (23-DOF, Brainco hands) · NVIDIA DGX Spark (GB10). Physically valid for
 sim-to-real — no base pinning / teleporting / joint freezing. Built with Claude Code (Opus 4.8).*
