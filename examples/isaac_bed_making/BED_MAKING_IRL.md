@@ -185,6 +185,53 @@ This keeps the issue's intent — *Device Connect orchestrates the human interac
 the closed on-board mic. (If/when Unitree exposes the array, the same coordination layer swaps the
 sidecar's headset source for the robot's mic with no logic change.)
 
+### 7.1 Built and verified live — both devices on the dashboard
+
+This is no longer just a design. The real G1 EDU (**"Rabia"**) and a **Bluetooth Headset Human Agent**
+both register on the hosted Device Connect fabric (`beta` tenant) and run the full loop end-to-end:
+Rabia asks for help **out loud through her chest speaker**, invokes the human agent's `ask()` over
+Device Connect, and the human's spoken answer — captured on the headset, transcribed by Whisper, and
+grounded — comes back over the fabric with a `human_replied` event.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as 🧑 Human
+    participant R as Rabia · G1 EDU
+    participant DC as Device Connect (beta)
+    participant HA as Human Agent (headset)
+    R-->>H: 🔊 "Can you hold the far corner?" (out loud)
+    R->>DC: invoke_remote(human-agent, ask)
+    DC->>HA: ask(question, yesno)
+    HA-->>H: 🔔 earcon → listening
+    H-->>HA: 🎤 "Yes, I'm holding the corner"
+    HA->>HA: Whisper → ground → "yes"
+    HA--)DC: human_replied{choice:"yes"}
+    HA-->>R: { choice: "yes" }
+```
+
+Both devices are live on the dashboard, each with its callable functions and event stream — the Human
+Agent (`ask`/`notify`/`presence` + `human_replied`) and Rabia (`say`/`request_help`/`get_status` +
+`help_requested`/`help_answered`):
+
+![Device Connect dashboard — Rabia + the Bluetooth Headset Human Agent online in the beta tenant](media/irl/device_connect_dashboard.png)
+
+**Audio, validated on the real hardware.** A real answer captured over the Jabra Talk 25 SE (HFP mSBC,
+16 kHz) — the energy VAD cleanly separates the speech from the robot's own (loud) cooling fan, and
+faster-whisper transcribes it → grounded to `yes`:
+
+![Bluetooth headset capture + energy VAD](media/irl/audio_headset_validation.png)
+
+The end-to-end help loop is ~10.8 s (out-loud speak → listen + VAD → Whisper → ground + return), and
+the robot's speaker master gain — dropped to 60 in a prior session, softening even the factory
+announcements — is restored to full:
+
+![pipeline latency + speaker gain restore](media/irl/audio_pipeline_validation.png)
+
+Because `device-connect-edge` needs Python ≥3.11 while the G1 SDK env is 3.10, the sidecar runs in a
+clean 3.11 env and drives the chest speaker (the verified `AudioClient` path, §5) through a subprocess
+**two-env bridge** — generalized as the `bootstrap-device-connect-env` skill in robotics-connect.
+
 ---
 
 ## 8. "Robot solo, asks when stuck" — the coordination
@@ -217,12 +264,14 @@ does 2 corners solo, asks for the 2 it can't, human helps → "the bed is made")
 ## 9. Status & what's next
 
 **Done + verified on hardware:** the transfer-valid 23-DOF policy (eye-verified), live LiDAR/RGB/depth
-perception (LiDAR-first hand placement), the robot **speaking** (English TTS), the ask-when-stuck
-coordination (loopback), and the human-as-DC-agent design.
+perception (LiDAR-first hand placement), the robot **speaking** (English TTS), and the **human-in-the-loop
+help exchange running live over Device Connect** — Rabia and the Bluetooth Headset Human Agent both on
+the dashboard, the out-loud ask → headset answer → grounded reply verified on the real hardware (§7.1).
 
 **Next:**
-1. Walk the robot to the bed (velocity-walk policy) and run the full **ask-when-stuck** loop on
-   hardware, with the human replying via the Spark headset / DC sidecar.
+1. Walk the robot to the bed (velocity-walk policy) and trigger the ask-when-stuck loop from the
+   on-robot competence monitor (the help exchange itself is now verified live; what remains is wiring
+   it to the walked-to-bed reach attempt).
 2. Deploy the 23-DOF policy to the EDU (map Isaac ↔ SDK joint order for parity) for the bedside reach.
 3. Brainco sensor-gated grip on the real sheet; sustained pull-load robustness (the open manipulation
    edge from the sim writeup).
