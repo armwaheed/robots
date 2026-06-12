@@ -239,6 +239,59 @@ def make_voice_channel(iface: Optional[str] = None, prefer_real: bool = True, as
     return ConsoleVoice()
 
 
+def _load_rc_module(name: str, path: str):
+    """Load a robotics-connect module by file path under a unique name, so its
+    ``locomotion`` module can't clash with this demo's own ``locomotion.py``."""
+    import importlib.util
+
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _import_locomotion_modules():
+    """Import robotics-connect's locomotion layer (G1 binding + abstract Sim), or raise."""
+    candidates = [
+        os.environ.get("ROBOTICS_CONNECT_DIR", ""),
+        "/home/unitree/robotics-connect",
+        str(Path.home() / "workspaces/git/robotics-connect"),
+    ]
+    for base in candidates:
+        if not base:
+            continue
+        g1 = os.path.join(base, "unitree", "g1", "locomotion", "g1_locomotion.py")
+        lib = os.path.join(base, "lib", "locomotion.py")
+        if os.path.isfile(g1):
+            loco_lib = _load_rc_module("robotics_connect_locomotion", lib)
+            g1mod = _load_rc_module("robotics_connect_g1_locomotion", g1)
+            return g1mod, loco_lib
+    raise ImportError("robotics-connect locomotion not found (set ROBOTICS_CONNECT_DIR)")
+
+
+def make_locomotion(iface: Optional[str] = None, prefer_real: bool = True):
+    """Return a locomotion controller from robotics-connect: the real ``G1Locomotion``
+    (connected + ready) on the robot, else a dependency-free ``SimLocomotion`` for
+    off-robot dry-runs. ``None`` if robotics-connect isn't found. Both controllers
+    expose ``stand``/``walk_forward``/``walk_to``/``turn_to``/``stop``."""
+    try:
+        g1mod, loco_lib = _import_locomotion_modules()
+    except ImportError as exc:
+        print(f"[human-partner] {exc}; skipping the walk-to-bed approach.")
+        return None
+    if prefer_real:
+        try:
+            loco = g1mod.G1Locomotion(iface=iface or "eth0")
+            loco.connect()
+            return loco
+        except Exception as exc:
+            print(f"[human-partner] real locomotion unavailable ({exc!r}); using sim.")
+    return loco_lib.SimLocomotion()
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 #  3. Device Connect — the single-G1 help device + the coordinator
 # ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -543,9 +596,13 @@ class HumanPartnerCoordinator:
     """
 
     def __init__(self, device_id: str = "beta-unitree-g1-edu-0", mode: str = "loopback",
-                 iface: Optional[str] = None, voice: Any = None, asr_backend: str = "auto") -> None:
+                 iface: Optional[str] = None, voice: Any = None, asr_backend: str = "auto",
+                 locomotion: Any = None) -> None:
         self.device_id = device_id
         self.mode = mode
+        self.iface = iface
+        self._locomotion = locomotion          # robotics-connect controller, lazily made
+        self._loco_ready = locomotion is not None
         self.monitor = CompetenceMonitor()
         self.voice = voice or make_voice_channel(iface=iface, asr_backend=asr_backend)
         self.agent = HelpAgent(device_id=device_id)
@@ -580,6 +637,31 @@ class HumanPartnerCoordinator:
 
     def _call(self, coro, timeout: float = 30.0):
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
+
+    def _ensure_locomotion(self):
+        if not self._loco_ready:
+            self._locomotion = make_locomotion(iface=self.iface, prefer_real=(self.mode == "broker"))
+            self._loco_ready = True
+        return self._locomotion
+
+    def approach_bed(self, distance_m: float = 1.0, vmax: float = 0.30) -> dict:
+        """Walk the robot to the bedside before it starts on the corners.
+
+        First pass: the robot is positioned within a few metres of the bed on a clear path
+        (manually, or by the Navigator), so the approach is a short straight ``walk_forward``
+        under closed-loop odometry via robotics-connect's locomotion layer. Returns a result
+        dict; a skipped no-op if locomotion is unavailable (e.g. off-robot without the layer)."""
+        loco = self._ensure_locomotion()
+        if loco is None:
+            return {"approached": False, "skipped": True}
+        self.agent.set_status("approaching")
+        self.announce("Walking to the bed.")
+        loco.stand()
+        result = loco.walk_forward(distance_m, vmax=vmax)
+        arrived = result is None
+        self.agent.log_action(kind="approach", summary=f"walked ~{distance_m:.1f} m to the bedside",
+                              arrived=arrived, result=result)
+        return {"approached": True, "arrived": arrived, "result": result}
 
     # -- the synchronous bridge the sim/behaviour loop uses --------------------------------------
     def attempt_corner(self, corner: str, signals: ReachSignals, listen_seconds: float = 6.0) -> dict:
@@ -656,6 +738,7 @@ def _run_demo() -> int:
     coord = HumanPartnerCoordinator(mode="loopback")
     coord.start()
     coord.announce("Hello. I'm going to make the bed. I'll ask for your help if I get stuck.")
+    print(f"\n--- approach ---\n   {coord.approach_bed(distance_m=1.0)}")
     signals = _demo_signals()
     for corner in BED_CORNERS:
         print(f"\n--- corner {corner} ---")
