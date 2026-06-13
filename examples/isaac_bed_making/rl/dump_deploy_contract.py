@@ -42,6 +42,10 @@ def main():
     cfg = BedReachEduEnvCfg_PLAY()
     cfg.scene.num_envs = args_cli.num_envs
     cfg.scene.eval_cam = None  # no rendering needed for a joint-order dump
+    # Deploy runs at the NOMINAL PD gains (you set the real robot's gains; you can't randomize
+    # them). The startup actuator-gain DR scales the per-env gains ±20%, so it would corrupt the
+    # gains we read back — disable it so the dumped gains are the nominal training values.
+    cfg.events.randomize_gains = None
     env = ManagerBasedRLEnv(cfg=cfg)
     robot = env.unwrapped.scene["robot"]
 
@@ -85,6 +89,21 @@ def main():
     # 5) EE / pelvis bodies + body order.
     body_names = list(robot.body_names)
 
+    # 6) Per-joint PD gains (kp, kd) the policy was trained under, in ACTION-joint order. The
+    #    whole-body deploy MUST command these — a zero/odd-gain transfer falls. Read the resolved
+    #    per-joint gains straight off the articulation (randomize_gains disabled above, so these
+    #    are the nominal values), and keep only the 23 action joints.
+    def _gain_vec(attr):
+        d = robot.data
+        for name in (attr, "default_" + attr):
+            if hasattr(d, name):
+                return getattr(d, name)[0].detach().cpu().tolist()
+        raise AttributeError(f"articulation data has neither {attr} nor default_{attr}")
+    js = _gain_vec("joint_stiffness")
+    jd = _gain_vec("joint_damping")
+    gains_by_name = {n: [round(float(js[i]), 6), round(float(jd[i]), 6)] for i, n in enumerate(artic_names)}
+    gains = {n: gains_by_name[n] for n in act_names}
+
     contract = {
         "control_hz": 1.0 / (cfg.sim.dt * cfg.decimation),
         "decimation": cfg.decimation,
@@ -104,6 +123,7 @@ def main():
             "joint_pos_names_in_order": obs_jp_names,
             "joint_pos_offset_default": [default_by_name[n] for n in obs_jp_names],
         },
+        "gains": gains,  # joint-name -> [kp, kd]; nominal PD the policy trained under (deploy needs these)
         "default_joint_pos_by_name": default_by_name,
         "ee_bodies": {"right": "right_wrist_roll_link", "left": "left_wrist_roll_link",
                       "pelvis": "pelvis"},
@@ -130,6 +150,9 @@ def main():
           f"{obs_jp_names == act_names}")
     print(f"obs term order: {list(obs_terms)}")
     print(f"obs term dims:  {obs_dims}  total={sum(obs_dims)}")
+    print("\nPD gains (kp, kd) per action joint:")
+    for n in act_names:
+        print(f"  {n:28s} kp={gains[n][0]:7.2f} kd={gains[n][1]:6.2f}")
     print(f"\nwrote {out}")
 
     env.close()

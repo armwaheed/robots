@@ -372,6 +372,34 @@ the **only** fix is a **full AC power cycle** (unplug from the wall ≥60 s — 
 After the power cycle the GPU boosted to **2541 MHz / 97 W** and v2 trained in 67 min. **Lesson: check the GPU
 clock-vs-max before blaming a config change.**
 
+### 10.1 Lifting v2 onto the productized deploy harness
+
+The on-hardware ladder above first ran through a bespoke `rl/deploy/g1_bedreach_deploy.py` that hardcoded an
+85-D observation concatenation and an inline gains table. Neither survives the v2 change — the actor dropped
+`base_lin_vel`, so the obs is now **82-D** — so the deploy is lifted onto the robot-agnostic harness in
+robotics-connect ([`lib/policy_deploy.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/policy_deploy.py)
++ the [G1 `RobotIO` binding](https://github.com/armwaheed/robotics-connect/blob/main/unitree/g1/deploy/g1_robot_io.py)).
+Everything is now driven by `rl/deploy_contract_v2.json`: the `ObsBuilder` is **term-major** — it concatenates
+exactly the terms the contract lists, in order — so the 82-D obs falls out of the contract with **no code change
+to robotics-connect**. The productized harness was already correct; the lift was entirely application-side.
+
+One real footgun surfaced and is fixed. The generalized whole-body rung reads its **PD gains from the contract**
+(`contract.gains`), but the dump script never emitted them — so a v2 deploy through the productized path would
+have commanded **`kp = 0` on every joint → zero torque → collapse** (the bespoke harness had hidden this behind
+its inline table). `dump_deploy_contract.py` now emits the per-joint nominal gains, read straight off the
+articulation with the startup gain-randomization disabled so they are the *nominal* training values, not a
+per-env DR sample. `deploy_contract_v2.json` now carries all 23 (`knee 150/4`, `waist_yaw 200/5`, `arms 40/10`,
+… matching the actuator config exactly).
+
+This is verified **off-hardware**: [`rl/deploy/test_v2_deploy_lift.py`](rl/deploy/test_v2_deploy_lift.py) loads the
+real exported `policy.pt` and `deploy_contract_v2.json` through `PolicyDeploy` against a mock robot and asserts
+(5/5) the 82-D obs is built and is **invariant to `base_lin_vel`**, the policy returns a finite bounded 23-D
+action, the contract carries positive PD for every joint, and the whole-body rung commands the trained gains on
+every publish (and `SafeStop` damps on exit). The deploy entrypoint is
+[`rl/deploy/g1_bedreach_deploy_v2.py`](rl/deploy/g1_bedreach_deploy_v2.py) (`--stage offline|arms|whole`); only
+its `io.connect()` / DDS read-write paths remain to be re-checked on the live robot (gantry, once the window is
+repaired).
+
 ## 11. Research, forums & references
 
 **Sim-to-real RL — observation & training:**
