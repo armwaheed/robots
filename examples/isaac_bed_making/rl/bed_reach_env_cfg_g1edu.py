@@ -111,7 +111,9 @@ class ActionsCfg:
 class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
+        # base_lin_vel is DELIBERATELY excluded: the real G1 cannot observe its base linear
+        # velocity reliably (the deploy used a noisy leg-kinematics odom estimate), and a policy
+        # that leans on it mis-balances on hardware. Train without it — the #1 sim-to-real fix.
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         hand_target = ObsTerm(func=mdp.generated_commands, params={"command_name": "hand_target"})
@@ -125,7 +127,27 @@ class ObservationsCfg:
             self.enable_corruption = True
             self.concatenate_terms = True
 
+    @configclass
+    class CriticCfg(ObsGroup):
+        """PRIVILEGED critic observation (runs in sim ONLY — never deployed). Asymmetric
+        actor-critic: the critic keeps base_lin_vel (the term the actor drops for hardware
+        deployability), so the value function still sees the true base velocity. Dropping it from
+        BOTH nets starved the critic and destabilised training (the 0.39->0.29 regression); this is
+        the standard sim-to-real fix (privileged critic / teacher-style obs). Clean (no noise)."""
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
+        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        hand_target = ObsTerm(func=mdp.generated_commands, params={"command_name": "hand_target"})
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, params={"asset_cfg": JOINTS_23})
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, params={"asset_cfg": JOINTS_23})
+        actions = ObsTerm(func=mdp.last_action)
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
     policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
 
 
 @configclass
@@ -139,6 +161,31 @@ class EventCfg:
             "dynamic_friction_range": (0.5, 0.9),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
+        },
+    )
+    # Sim-to-real domain randomization: the whole-body transfer failed on the real G1, so make
+    # the policy robust to the dynamics gap. Per-env (startup) variation of the actuator PD gains
+    # and the base mass, alongside the friction DR above and the push_robot perturbation below.
+    randomize_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (0.8, 1.2),
+            "damping_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    add_base_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+            "mass_distribution_params": (-1.0, 3.0),
+            "operation": "add",
+            "distribution": "uniform",
+            "recompute_inertia": True,
         },
     )
     reset_base = EventTerm(

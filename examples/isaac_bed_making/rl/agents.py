@@ -16,7 +16,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class BedReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 3000
-    save_interval = 100
+    save_interval = 50   # finer: the transfer run peaked ~iter 750 then regressed — catch the peak
     experiment_name = "bed_reach_g1"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
@@ -33,7 +33,7 @@ class BedReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.008,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
+        learning_rate=5.0e-4,  # was 1e-3 (2x the humanoid norm) — reduce the peak-then-regress
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

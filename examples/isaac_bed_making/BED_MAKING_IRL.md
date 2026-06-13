@@ -321,5 +321,97 @@ the dashboard, the out-loud ask → headset answer → grounded reply verified o
    The human loop intentionally doesn't depend on it; an external USB-C array stays an option if a
    fully on-robot listen path is ever wanted.
 
+---
+
+## 10. Hardware deploy — the de-risk ladder, an incident, and a transfer-robust retrain
+
+The robot **walked to the bed** under closed-loop measured odometry (`rt/odommodestate`), controller-abort
+armed, and made light contact with the wooden footboard while staying balanced (eye- + telemetry-verified:
+IMU level, not leaning). Two vendor-interface gotchas surfaced and are now baked into the
+[robotics-connect locomotion binding](https://github.com/armwaheed/robotics-connect): `LocoClient.BalanceStand`
+needs a `balance_mode` argument on the current SDK (and only sets the mode — it does not stand the robot up),
+and `Move(...)` must use `continous_move=True` or the gait re-ramps every re-issue into a ~0.03 m/s shuffle
+that false-trips the stall guard (which is a *speed* check, not an obstacle sensor).
+
+**The whole-body RL deploy was staged as a de-risk ladder** (full rationale in robotics-connect
+[`SAFETY.md`](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md)):
+
+| Rung | Runs | Fall risk | Result |
+|---|---|---|---|
+| 0 — offline | obs+policy printed, no commands | none | **joint mapping verified on hardware** — predicted crouch offsets (knee +0.20, hip_pitch −0.17) landed on the named joints. The IsaacLab action order is **interleaved** (action idx 9 = `left_shoulder_pitch`, *between* the knees and ankles) — NOT the SDK 0–28 order; map by joint name. |
+| 1 — arm-only | policy's arms via `rt/arm_sdk`, legs on vendor balance | none | smooth, bounded, abortable; IMU dead-steady — the policy→arm control path validated, fall-safe |
+| 2 — whole-body | all 23 joints via `rt/lowcmd`, vendor balance released | **high** | transfer failed (the policy didn't balance) → **incident** |
+
+**The incident (and the durable safety lesson).** On the gantry, the whole-body transfer failed and the
+operator's controller-abort correctly damped it. The deploy process was still alive, so it was `kill -9`'d
+"to stop the commands" — which **latched the last high-gain command on the motors** (DDS keeps applying the
+last sample; on the G1 at sim gains, `kp` up to 150–200) with nothing left to update or damp it. The robot
+**spin-kicked on the floor and broke an office window.** The fix is architectural, now shipped: **never
+`kill -9` a low-level control process** — the safe stops are the hardware e-stop, the controller firmware-damp,
+or a clean `kp=0` damp; every motor-command process must wrap its loop in
+[`lib/safe_stop.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/safe_stop.py) (damps on
+return/exception/SIGINT/SIGTERM). See [`SAFETY.md` §0](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md).
+
+**Why the transfer failed, and the fix.** The first transfer-robust retrain dropped `base_lin_vel` from the
+observation (the real G1 can't observe its base linear velocity reliably) — but dropping it from **both** the
+actor and the critic **starved the value function**, and `reach_coarse` peaked at 0.39 then *regressed* to
+0.29 (ep-len ~210/400, topples ~30%). The research-backed fix is **asymmetric actor-critic**: keep
+`base_lin_vel` (and other privileged terms) in a **critic-only** observation group while the **actor** drops it
+and stays deployable (82-D). Retrained ("v2"): `reach_coarse` climbed **monotonically to 0.59**, ep-len
+**394/400** (robust, barely topples), eye-verified upright + reaching at mid *and* end of the episode
+([`media/rl/g1edu/bed_reach_v2_critic.mp4`](media/rl/g1edu/bed_reach_v2_critic.mp4)). The deployable actor is **82-D**
+(no `base_lin_vel`); the deploy contract is dumped from the exact env by
+[`rl/dump_deploy_contract.py`](rl/dump_deploy_contract.py) → `rl/deploy_contract_v2.json`. Deferred: actuator
+**latency / motor-strength DR** (needs an actuator-model change — add only if hardware transfer is still marginal).
+
+**The DGX Spark slowdown was a known GB10 bug, not the config.** A retrain ran 3.2× slower (213 vs 67 min,
+same envs) — diagnosed not-thermal (40 °C), not CPU-bound (1/20 cores), not contention: the **GB10 GPU was
+trapped in a low-power state**, pinned at **507 MHz / 6 W under 80% load** (vs a 2418 MHz app clock). It is a
+[documented Spark firmware bug](https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304);
+the **only** fix is a **full AC power cycle** (unplug from the wall ≥60 s — a normal reboot does not clear it).
+After the power cycle the GPU boosted to **2541 MHz / 97 W** and v2 trained in 67 min. **Lesson: check the GPU
+clock-vs-max before blaming a config change.**
+
+## 11. Research, forums & references
+
+**Sim-to-real RL — observation & training:**
+- Asymmetric actor-critic / privileged critic (keep `base_lin_vel` in the critic, drop from the actor):
+  [Isaac Lab — Sim-to-Real Policy Transfer](https://isaac-sim.github.io/IsaacLab/main/source/experimental-features/newton-physics-integration/sim-to-real.html)
+  (teacher/student privileged-obs pattern); rsl-rl `critic` obs group.
+- Obs-layout / joint-order parity is the #1 G1 deploy footgun: [IsaacLab #4037](https://github.com/isaac-sim/IsaacLab/issues/4037).
+- [Real-world humanoid locomotion with RL — Science Robotics](https://www.science.org/doi/10.1126/scirobotics.adi9579);
+  [Learning Sim-to-Real Humanoid Locomotion in 15 Minutes (arXiv 2512.01996)](https://arxiv.org/pdf/2512.01996);
+  [Booster Gym (arXiv 2506.15132)](https://arxiv.org/pdf/2506.15132); [Unitree `unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab).
+
+**Whole-body loco-manipulation & reward design (reach while balancing):**
+- [FALCON — Force-Adaptive Humanoid Loco-Manipulation (arXiv 2505.06776)](https://arxiv.org/abs/2505.06776)
+  (dual-agent: lower-body balance under force + upper-body EE tracking);
+  [SkillBlender (arXiv 2506.09366)](https://arxiv.org/html/2506.09366); HOVER / ExBody2;
+  [Kinematics-Aware Multi-Policy (arXiv 2511.21169)](https://arxiv.org/pdf/2511.21169).
+- Reward design trend: robust behaviors emerge from **<10 terms** vs heavy 20+-term shaping — judge by
+  `reach_coarse` + ep-len + the render, not the regularizer-dominated mean reward.
+
+**Domain randomization (sim-to-real dynamics gap):**
+- Motor strength / offset / lag like IsaacGym: [IsaacLab Discussion #2895](https://github.com/isaac-sim/IsaacLab/discussions/2895)
+  (`isaaclab.utils.buffers.DelayBuffer`, `DelayedPDActuatorCfg`); [DR tips for legged locomotion #2813](https://github.com/isaac-sim/IsaacLab/discussions/2813).
+- Friction + actuator delay are the *critical* terms; [DrEureka — LLM-guided DR (arXiv 2406.01967)](https://arxiv.org/pdf/2406.01967).
+
+**DGX Spark / GB10 (training throughput):**
+- [Arm — Isaac Lab RL on DGX Spark](https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_isaac_robotics/4_isaac_rfl/)
+  (~1.5 s/iter, 40–60k fps, 2048–4096 envs, `--headless`, `LD_PRELOAD=…libgomp.so.1`).
+- GPU stuck-low-power bug + AC-cycle fix: [NVIDIA forum 370304](https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304) ·
+  [367768](https://forums.developer.nvidia.com/t/gb10-gpu-power-stuck-around-37w-when-running-llms-gemma-4-26b-qwen-3-6-27b/367768) ·
+  [step-by-step fix](https://dredyson.com/fix-dgx-spark-performance-degradation-gpu-power-draw-issue-in-under-5-minutes-actually-works-a-complete-step-by-step-beginners-guide-to-resolving-the-14w-power-cap-low-token-rate-and-stuck-pe/) ·
+  [spark-doctor diagnostic](https://github.com/joeynyc/spark-doctor). Blackwell `sm_121` slow NVRTC paths → Isaac Sim source build w/ CUDA 13 (general speedup; not the stuck-clock cause).
+
+**Help-seeking, failure-detection & perception (the human-partner loop):**
+- [KnowNo — conformal MCQA grounding (arXiv 2307.01928)](https://arxiv.org/abs/2307.01928) (the ask-reply grounding);
+  BCVA (arXiv 2302.04334) / [FAIL-Detect (arXiv 2503.08558)](https://arxiv.org/abs/2503.08558) (execution-time "ask-when-stuck" trigger, no failure data needed);
+  Ask-to-Act (arXiv 2504.00907).
+- Cloth/bed vision: Seita et al. 2019 (depth > RGB on textureless bedding) → LiDAR-first hand placement;
+  VIRAL (arXiv 2511.15200) visual DR.
+- Drift-free localization for the walk: [Point-LIO (Unitree LiDAR)](https://github.com/unitreerobotics/point_lio_unilidar) /
+  [FAST-LIO localization for the G1](https://github.com/deepglint/FAST_LIO_LOCALIZATION_HUMANOID).
+
 *Hardware: Unitree G1 EDU (23-DOF, Brainco hands) · NVIDIA DGX Spark (GB10). Physically valid for
 sim-to-real — no base pinning / teleporting / joint freezing. Built with Claude Code (Opus 4.8).*
