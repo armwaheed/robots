@@ -394,11 +394,85 @@ per-env DR sample. `deploy_contract_v2.json` now carries all 23 (`knee 150/4`, `
 This is verified **off-hardware**: [`rl/deploy/test_v2_deploy_lift.py`](rl/deploy/test_v2_deploy_lift.py) loads the
 real exported `policy.pt` and `deploy_contract_v2.json` through `PolicyDeploy` against a mock robot and asserts
 (5/5) the 82-D obs is built and is **invariant to `base_lin_vel`**, the policy returns a finite bounded 23-D
-action, the contract carries positive PD for every joint, and the whole-body rung commands the trained gains on
-every publish (and `SafeStop` damps on exit). The deploy entrypoint is
-[`rl/deploy/g1_bedreach_deploy_v2.py`](rl/deploy/g1_bedreach_deploy_v2.py) (`--stage offline|arms|whole`); only
-its `io.connect()` / DDS read-write paths remain to be re-checked on the live robot (gantry, once the window is
-repaired).
+action, the contract carries positive PD for every joint, and the whole-body rung commands the trained gains
+(damping-first gain ramp → full PD in the policy phase) and `SafeStop` damps on exit. The deploy entrypoint is
+[`rl/deploy/g1_bedreach_deploy_v2.py`](rl/deploy/g1_bedreach_deploy_v2.py) (`--stage offline|arms|whole`).
+
+### 10.2 Whole-body aborted (procedure error), and the corrected operator procedure
+
+`--stage offline` was then **validated on the live robot** (read-only, zero motor commands): the 82-D obs built
+from the real IMU (`projected_gravity ≈ [0.03, 0.005, −1.0]`, upright), v2 ran in the deploy env (`|a|max ≈ 2.77`,
+finite), and command-responsiveness was confirmed (right target → right arm leads). The whole-body attempt was
+then **aborted — a procedure/mode error, not the policy**, and is the reason for the rework below.
+
+**What went wrong.** The robot was operated from **Regular (AI-Sport) mode**, and the operator tried to "verify
+the abort" by pressing controller buttons — but **in Regular mode the `A/B/X/Y` combos are bound to vendor gesture
+routines**, so the "abort test" *commanded arm motions*. On a loose tether that destabilized the robot; it
+collapsed and ended up in Develop mode. (The deploy process itself was inert — stuck at a `Type 'whole'` prompt,
+never publishing.) No new damage, but a clear lesson: **the handheld any-button latch is only a clean abort in
+Develop mode.**
+
+**Corrected G1 mode + abort model** (from the Unitree docs — quadruped.de G1 controls FW1.4; Weston Robot G1 dev
+guide; `unitree_sdk2_python#43`):
+
+| Action | Buttons (FW ≥1.4) | Notes |
+|---|---|---|
+| **Damping / e-stop** | **`L2+B`** (old `L1+A`) | compliant, settles slowly; the operator e-stop; a clean abort **only in Develop mode** |
+| Locked standing | `L2+UP` | from damping; support the shoulders |
+| Regular / AI-Sport | `R1+X` | **buttons = vendor gestures here, not aborts** |
+| **Develop / low-level `rt/lowcmd`** | **`L2+R2`** | **precondition: SUSPENDED + DAMPING first**; pauses AI-Sport; **exit = reboot** |
+
+**Sequence: suspend → `L2+B` (damping) → `L2+R2` (Develop), operator-driven** — *not* software
+`MotionSwitcher.ReleaseMode`. Develop mode executes queued `rt/lowcmd`, so it needs DDS hygiene and a damping-first
+start. **Never `kill -9`** (latches the last command → runaway).
+
+**The suspension/activation paradox.** A whole-body **balance** policy assumes feet-on-ground dynamics:
+- **fully suspended** → off-distribution (no ground reaction) → its corrections diverge → **flailing is the
+  guaranteed behavior**; you cannot validate a balance policy while it dangles.
+- **feet-on-ground, taut-but-slack gantry as a fall-catch** → in-distribution, with a real (but caught) fall
+  possible. This is the correct rig.
+
+The **activation transient** (the dangerous handoff) is the policy seeing a pose far from its **default** and
+commanding a large first action to return to it — worse from a non-default squat. The fix, now in code:
+1. **move to the EXACT default training pose first**, under a scripted **gain-ramped** position move (damping-first:
+   kd nominal throughout, kp ramped up) — the policy is out of the loop;
+2. start the policy on a **neutral command** (≈0 first action) and **ramp the command**;
+3. **first whole-body test = STAND** (neutral command), add the reach only after a stable stand;
+4. **feet-on-ground + slack gantry**, never fully suspended.
+
+**Bigger reframe — prefer `--stage arms`.** The fall-safe arm overlay (`rt/arm_sdk`, legs on the vendor balancer)
+delivers the bedside reach with **zero whole-body balance risk** and no gantry. Do the arms reach **first**; take
+on whole-body legs only if the reach demonstrably needs CoM shifting the vendor balancer can't provide.
+
+**What the rework shipped** (robotics-connect `lib/policy_deploy.py` + `unitree/g1/deploy/g1_robot_io.py`, and this
+repo's `rl/deploy/g1_bedreach_deploy_v2.py`):
+- **Dropped the software `ReleaseMode` path.** `verify_whole_body_ready()` now only **verifies** operator-driven
+  Develop mode via `MotionSwitcher.CheckMode()` (a vendor mode still active → refuse; unreadable → proceed only on
+  an explicit operator Develop-mode assertion, `--in-develop-mode`).
+- **`confirm_abort_live()`** — the operator presses+releases the handheld and the code confirms the latch fires
+  **in the current mode** before any motion (replaces the old `input("Type 'whole'")` prompt).
+- **Explicit VOLATILE / keep-last-1 QoS on the `rt/lowcmd` writer** so a torn-down writer leaves no latched command
+  to retransmit (verified against the robot's own `unitree_sdk2_python`, cyclonedds 0.10.2).
+- **Move-to-default + damping-first gain-ramp + command-ramp** startup in `run_whole`; `--whole-mode stand|reach`
+  (default **stand**).
+- Off-hardware tests green: `lib/test_policy_deploy.py` **9/9**, `rl/deploy/test_v2_deploy_lift.py` **5/5**.
+
+**Operator runbook (every whole-body run).** Robot on a gantry, **feet on the ground, strap slack** (catches a fall
+in a few cm — never fully suspended). Hardware e-stop / battery in reach. Then:
+1. **Enter Develop mode by hand:** suspend → `L2+B` (damping) → `L2+R2`.
+2. `--stage offline` first (read-only) — confirm obs/joint-map/action and a small `|a|max` for the STAND command.
+3. `--stage whole --whole-mode stand` — the script verifies Develop mode, makes you **prove the abort latches**
+   (press+release), then move-to-default → STAND. Watch for a stable stand **by eye**, not telemetry.
+4. Only after a stable stand: `--whole-mode reach` (command ramps STAND→target).
+- **Aborting a run = press ANY button.** In Develop mode the in-loop any-button latch catches it within one
+  ~20 ms tick and runs the clean `kp=0` damp (`SafeStop`) — never hunt for a specific combo, just mash any button.
+  Backstops if the process itself ever hangs: handheld **`L2+B`** firmware damp → hardware e-stop / battery.
+  `SafeStop` also damps on return/exception/SIGINT/`kill -TERM`. **Never `kill -9`** — it latches the last
+  high-gain command (this broke a window once). See robotics-connect [`SAFETY.md`](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md).
+
+**Status:** code-complete and tested off-hardware + the SDK API verified read-only against the robot's own SDK; the
+reworked whole-body rung (Develop-mode verify, abort-live handshake, `rt/lowcmd` QoS, move-to-default startup) still
+needs its **on-gantry live re-check**.
 
 ## 11. Research, forums & references
 

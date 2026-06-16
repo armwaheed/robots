@@ -117,17 +117,23 @@ def main(policy_path: str) -> None:
     print(f"  ok  policy(offline): |a|max={np.abs(a).max():.3f}, finite, "
           f"target_q in [{min(tq.values()):+.3f}, {max(tq.values()):+.3f}]")
 
-    # 5) run the whole-body ladder on the mock and prove every published command carried the
-    #    trained gains (i.e. the productized run_whole is NOT zero-torque)
+    # 5) run the whole-body ladder on the mock and prove the trained PD reaches the joints with the
+    #    damping-first gain ramp (move-to-default ramps kp floor→nominal; kd stays nominal), and that
+    #    the policy phase commands the FULL trained gain (i.e. run_whole is NOT zero-torque).
     pd._sleep = lambda _dt: None                                  # don't actually sleep in the test
-    dep.run_whole(CMD, seconds=0.04, settle_s=0.02, blend_s=0.02, log=lambda *_: None)
-    assert io.released and io.published, "run_whole should release the vendor controller and publish"
+    dep.run_whole(CMD, seconds=0.04, to_default_s=0.04, settle_s=0.02, blend_s=0.02,
+                  cmd_ramp_s=0.02, log=lambda *_: None)
+    assert io.verified and io.published, "run_whole should verify whole-body authority and publish"
     knee = [g.get("left_knee_joint") for g in io.pub_gains]
     assert all(g is not None for g in knee), "every whole-body publish must set the knee gain"
-    assert all(g[0] == 150.0 and g[1] == 4.0 for g in knee), \
-        f"whole-body knee gain not the trained PD: {set(map(tuple, knee))}"
+    assert all(g[0] > 0 and g[1] == 4.0 for g in knee), \
+        f"every publish must carry positive kp and the nominal (damping-first) knee kd=4.0: {set(map(tuple, knee))}"
+    assert max(g[0] for g in knee) == 150.0, \
+        f"the gain ramp must reach the trained knee kp=150.0 (got max {max(g[0] for g in knee)})"
+    assert tuple(knee[-1]) == (150.0, 4.0), \
+        f"the policy phase must command the full trained knee PD: {knee[-1]}"
     assert io.damps > 0, "run_whole must damp on exit (SafeStop)"
-    print(f"  ok  run_whole: {len(io.published)} commands, knee PD=(150.0, 4.0) on every one, damped on exit")
+    print(f"  ok  run_whole: {len(io.published)} commands, knee PD ramps floor→(150.0, 4.0), damped on exit")
 
     print("\nv2 deploy lift: 5/5 checks passed — the 82-D policy deploys cleanly through "
           "robotics-connect PolicyDeploy + the G1 RobotIO contract.")

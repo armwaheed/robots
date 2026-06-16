@@ -9,12 +9,22 @@ survives the v2 change (the actor dropped ``base_lin_vel`` → 82-D). Here EVERY
 gains — so the same code deploys any future re-dump with zero edits, and the obs can never go
 out of sync with the trained net.
 
-The de-risk ladder is the shared one (each rung gates the next):
+The de-risk ladder is the shared one (each rung gates the next). **The recommended useful reach is
+`--stage arms`** — it is fall-safe and needs no gantry, and the bedside reach does not obviously
+need leg/CoM control the vendor balancer can't provide. `--stage whole` is gantry-only and is a
+last resort, taken on only if the reach demonstrably needs whole-body balance.
   --stage offline   read-only: build the 82-D obs from live DDS, run the policy, print. No motion.
-  --stage arms      fall-safe: only the arm joints via rt/arm_sdk; legs stay on the vendor balance
-                    controller (the robot cannot fall). Rate-limited + clamped + motion-blended.
-  --stage whole     full whole-body via rt/lowcmd, vendor balance released. REQUIRES the robot
-                    SUPPORTED (gantry). Operator-confirmed; SafeStop damps on every exit.
+                    ALWAYS run this first (verifies obs/joint-map/action on the live robot).
+  --stage arms      RECOMMENDED. Fall-safe: only the arm joints via rt/arm_sdk; the legs stay on
+                    the vendor balance controller (the robot cannot fall). Rate-limited + clamped
+                    + motion-blended. No gantry needed.
+  --stage whole     LAST RESORT, gantry-only. Full whole-body via rt/lowcmd. The vendor controller
+                    is NOT released in software — the OPERATOR must put the robot in low-level
+                    Develop mode by hand first (suspend → L2+B → L2+R2); this script VERIFIES that
+                    and proves the handheld abort latches before any motion, then moves to the exact
+                    default pose under a gain-ramp before the policy runs. Default `--whole-mode
+                    stand` (neutral command) — prove a stable STAND before ever `--whole-mode reach`.
+                    Support = FEET ON THE GROUND with a SLACK gantry (never fully suspended).
 
 SAFETY: NEVER ``kill -9`` this process (a hard kill latches the last high-gain command → runaway;
 see robotics-connect SAFETY.md). The handheld controller abort (any button) is the in-loop stop;
@@ -41,6 +51,10 @@ DEFAULT_POLICY = os.path.join(
 )
 # A bedside reach target (base frame +x fwd / +y left / +z up), inside the trained command range.
 DEFAULT_TARGET = [0.45, -0.25, -0.05, 1.0, 0.0, 0.0, 0.0]
+# A neutral, minimal-reach STAND command (near, centred, low — well inside the command box). The
+# first whole-body bring-up uses this so the policy's first action is small; confirm |a|max is small
+# at --stage offline with this command before any whole-body STAND.
+STAND_TARGET = [0.20, 0.0, -0.05, 1.0, 0.0, 0.0, 0.0]
 
 # The 10 arm joints driven via rt/arm_sdk for the fall-safe --stage arms.
 ARM_JOINTS = [
@@ -88,8 +102,15 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=3, help="offline: inference steps to print")
     ap.add_argument("--seconds", type=float, default=5.0, help="arms/whole: run length")
     ap.add_argument("--vmax", type=float, default=1.0, help="arms: joint rate limit (rad/s)")
-    ap.add_argument("--settle", type=float, default=1.5, help="whole: hold-pose seconds")
-    ap.add_argument("--blend", type=float, default=2.5, help="whole: blend-to-policy seconds")
+    ap.add_argument("--whole-mode", choices=["stand", "reach"], default="stand",
+                    help="whole: 'stand' (neutral command — prove this first) or 'reach' (full target)")
+    ap.add_argument("--in-develop-mode", action="store_true",
+                    help="whole: operator asserts the robot is in low-level Develop mode (only used "
+                         "when MotionSwitcher.CheckMode is unreadable because Develop paused it)")
+    ap.add_argument("--to-default", type=float, default=2.0, help="whole: scripted move-to-default seconds")
+    ap.add_argument("--settle", type=float, default=1.0, help="whole: hold-default seconds")
+    ap.add_argument("--blend", type=float, default=2.5, help="whole: blend default→policy seconds")
+    ap.add_argument("--cmd-ramp", type=float, default=2.0, help="whole: ramp STAND→reach command seconds")
     args = ap.parse_args()
 
     rc = _rc_root()
@@ -108,7 +129,8 @@ def main() -> None:
 
     # Control exactly the 23 action joints (matches the eye-verified reference; never touches the
     # 6 absent EDU joints). G1RobotIO maps these names → SDK motor indices internally.
-    io = g1io.G1RobotIO(iface=args.iface, names=contract.action_joint_names)
+    io = g1io.G1RobotIO(iface=args.iface, names=contract.action_joint_names,
+                        assume_develop_mode=args.in_develop_mode)
     io.connect()
     dep = pd.PolicyDeploy(contract, args.policy, io)
 
@@ -120,11 +142,17 @@ def main() -> None:
             dep.run_partial(target, subset=ARM_JOINTS, seconds=args.seconds,
                             clamp=ARM_LIMITS, vmax_rad_s=args.vmax)
         elif args.stage == "whole":
-            print("\n*** STAGE WHOLE — the robot MUST be SUPPORTED (gantry). A transfer error = fall. ***")
-            if input("Type 'whole' to release the vendor controller and run the policy: ").strip().lower() != "whole":
-                print("aborted (no confirmation).")
-                return
-            dep.run_whole(target, seconds=args.seconds, settle_s=args.settle, blend_s=args.blend)
+            # The first whole-body pass STANDS on a neutral command; only --whole-mode reach ramps to
+            # the bedside target. NO software vendor release — the harness verifies operator-driven
+            # Develop mode (suspend → L2+B → L2+R2) and proves the abort latches before any motion.
+            whole_target = STAND_TARGET if args.whole_mode == "stand" else target
+            print("\n*** STAGE WHOLE — LAST RESORT, GANTRY-ONLY. Support = FEET ON THE GROUND with a "
+                  "SLACK gantry (never fully suspended). Hardware e-stop + the battery in reach. ***")
+            print(f"    whole-mode={args.whole_mode}  command={whole_target}")
+            print("    Operator: be in low-level Develop mode (suspend → L2+B → L2+R2). NEVER kill -9.")
+            dep.run_whole(whole_target, seconds=args.seconds, neutral_command=STAND_TARGET,
+                          to_default_s=args.to_default, settle_s=args.settle, blend_s=args.blend,
+                          cmd_ramp_s=args.cmd_ramp)
     finally:
         io.shutdown()
 
