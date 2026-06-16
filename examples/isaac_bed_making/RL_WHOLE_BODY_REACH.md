@@ -19,7 +19,7 @@ squat, robot 1 (far) leans over the mattress — each balancing entirely on its 
 pinning, no teleporting, no joint freezing). "Free base" = the robot is **not** bolted to the world; it
 has to keep itself upright, exactly like the real hardware. The postures differ because **the policy
 solves the reach within each robot's own actuation envelope — RL does not impose human grace**; that
-asymmetry is learned, balanced behaviour, not a stumble.*
+asymmetry is learned, balanced behaviour, not a loss of balance.*
 
 **🎬 Benchmark video (full two-G1 demo, current):** [`media/isaac_bed_making.mp4`](media/isaac_bed_making.mp4)
 &nbsp;•&nbsp; **Single-policy isolation eval:** [`media/rl/bed_pull_policy.mp4`](media/rl/bed_pull_policy.mp4)

@@ -19,12 +19,16 @@ last resort, taken on only if the reach demonstrably needs whole-body balance.
                     the vendor balance controller (the robot cannot fall). Rate-limited + clamped
                     + motion-blended. No gantry needed.
   --stage whole     LAST RESORT, gantry-only. Full whole-body via rt/lowcmd. The vendor controller
-                    is NOT released in software — the OPERATOR must put the robot in low-level
-                    Develop mode by hand first (suspend → L2+B → L2+R2); this script VERIFIES that
-                    and proves the handheld abort latches before any motion, then moves to the exact
-                    default pose under a gain-ramp before the policy runs. Default `--whole-mode
-                    stand` (neutral command) — prove a stable STAND before ever `--whole-mode reach`.
-                    Support = FEET ON THE GROUND with a SLACK gantry (never fully suspended).
+                    is NOT released in software — the OPERATOR puts the robot in low-level Develop
+                    mode by hand first (suspend → L2+B → L2+R2); this script VERIFIES that and proves
+                    the handheld abort latches before any motion. Then it mirrors the Unitree low-level
+                    deploy sequence: move-to-default (legs bear load via a commanded stiff stance, NOT
+                    the vendor balancer) → OPERATOR CHECKPOINT (lower the tether STAGE 1 so the feet
+                    bear weight, verify it stands, then `touch` the --proceed-file) → policy (lower the
+                    tether STAGE 2 once stably balancing) → balance-preserving return to neutral →
+                    gentle pose→default + kp→0 release. Default `--whole-mode stand` — prove a stable
+                    STAND before ever `--whole-mode reach`. Support = FEET ON THE GROUND with a SLACK
+                    gantry (never fully suspended).
 
 SAFETY: NEVER ``kill -9`` this process (a hard kill latches the last high-gain command → runaway;
 see robotics-connect SAFETY.md). The handheld controller abort (any button) is the in-loop stop;
@@ -108,9 +112,17 @@ def main() -> None:
                     help="whole: operator asserts the robot is in low-level Develop mode (only used "
                          "when MotionSwitcher.CheckMode is unreadable because Develop paused it)")
     ap.add_argument("--to-default", type=float, default=2.0, help="whole: scripted move-to-default seconds")
-    ap.add_argument("--settle", type=float, default=1.0, help="whole: hold-default seconds")
+    ap.add_argument("--settle", type=float, default=1.0, help="whole: minimum hold-at-default before proceed")
     ap.add_argument("--blend", type=float, default=2.5, help="whole: blend default→policy seconds")
     ap.add_argument("--cmd-ramp", type=float, default=2.0, help="whole: ramp STAND→reach command seconds")
+    ap.add_argument("--return-s", type=float, default=2.5, dest="return_s",
+                    help="whole: ramp command back to neutral (policy still balancing) seconds")
+    ap.add_argument("--release-s", type=float, default=1.0, dest="release_s",
+                    help="whole: gentle pose→default + kp→0 release seconds")
+    ap.add_argument("--stand-hold-max", type=float, default=120.0, dest="stand_hold_max",
+                    help="whole: max seconds to hold at default waiting for the operator proceed (else damps)")
+    ap.add_argument("--proceed-file", default="/tmp/whole_proceed", dest="proceed_file",
+                    help="whole: operator-checkpoint sentinel — create this file (touch) to start the policy")
     args = ap.parse_args()
 
     rc = _rc_root()
@@ -138,6 +150,14 @@ def main() -> None:
         if args.stage == "offline":
             dep.run_offline(target, steps=args.steps)
         elif args.stage == "arms":
+            # The arm overlay only does anything when the high-level balance controller is RUNNING
+            # (it cedes arm authority to rt/arm_sdk at weight=1.0); in low-level Develop mode rt/arm_sdk
+            # is a no-op. Probe the loco service so a wrong-mode run fails loud instead of silently.
+            if io._high_level_service_alive() is False:
+                print("[deploy] REFUSING --stage arms: the high-level balance controller is DOWN "
+                      "(loco service not answering) — rt/arm_sdk would no-op. Stand the robot up in "
+                      "Regular/AI-Sport mode (the vendor balancer must be running), then retry.")
+                return
             # Fall-safe arm overlay; PD comes from the contract (sim-parity kp=40/kd=10 for arms).
             dep.run_partial(target, subset=ARM_JOINTS, seconds=args.seconds,
                             clamp=ARM_LIMITS, vmax_rad_s=args.vmax)
@@ -146,13 +166,23 @@ def main() -> None:
             # the bedside target. NO software vendor release — the harness verifies operator-driven
             # Develop mode (suspend → L2+B → L2+R2) and proves the abort latches before any motion.
             whole_target = STAND_TARGET if args.whole_mode == "stand" else target
+            # Operator checkpoint: after move-to-default, run_whole holds the stance and waits for the
+            # proceed file before starting the policy (the operator lowers the tether stage 1 first).
+            try:
+                os.remove(args.proceed_file)            # clear any stale sentinel so we never auto-proceed
+            except FileNotFoundError:
+                pass
             print("\n*** STAGE WHOLE — LAST RESORT, GANTRY-ONLY. Support = FEET ON THE GROUND with a "
                   "SLACK gantry (never fully suspended). Hardware e-stop + the battery in reach. ***")
             print(f"    whole-mode={args.whole_mode}  command={whole_target}")
             print("    Operator: be in low-level Develop mode (suspend → L2+B → L2+R2). NEVER kill -9.")
+            print("    CHECKPOINT: after move-to-default, lower the tether (stage 1) + verify it stands,")
+            print(f"    then START THE POLICY by creating the proceed file:  touch {args.proceed_file}")
             dep.run_whole(whole_target, seconds=args.seconds, neutral_command=STAND_TARGET,
                           to_default_s=args.to_default, settle_s=args.settle, blend_s=args.blend,
-                          cmd_ramp_s=args.cmd_ramp)
+                          cmd_ramp_s=args.cmd_ramp, return_s=args.return_s, release_s=args.release_s,
+                          stand_hold_max_s=args.stand_hold_max,
+                          proceed_fn=lambda: os.path.exists(args.proceed_file))
     finally:
         io.shutdown()
 

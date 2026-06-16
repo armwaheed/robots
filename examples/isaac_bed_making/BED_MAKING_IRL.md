@@ -453,17 +453,34 @@ repo's `rl/deploy/g1_bedreach_deploy_v2.py`):
   **in the current mode** before any motion (replaces the old `input("Type 'whole'")` prompt).
 - **Explicit VOLATILE / keep-last-1 QoS on the `rt/lowcmd` writer** so a torn-down writer leaves no latched command
   to retransmit (verified against the robot's own `unitree_sdk2_python`, cyclonedds 0.10.2).
-- **Move-to-default + damping-first gain-ramp + command-ramp** startup in `run_whole`; `--whole-mode stand|reach`
-  (default **stand**).
-- Off-hardware tests green: `lib/test_policy_deploy.py` **9/9**, `rl/deploy/test_v2_deploy_lift.py` **5/5**.
+- **Move-to-default + damping-first gain-ramp + command-ramp** startup in `run_whole`, plus an **operator
+  checkpoint** (hold at the default stance until the operator lowers the tether and signals proceed — fail-safe
+  damp if they never do), a **balance-preserving return** (ramp the command back to neutral with the policy still
+  balancing), and a **gentle pose→default + kp→0 release** — every transition motion-blended. `--whole-mode
+  stand|reach` (default **stand**). This mirrors the Unitree low-level RL-deploy state machine (zero-torque →
+  develop → move-to-default → lower hoist → policy → lower rope;
+  [unitree_rl_gym deploy_real](https://github.com/unitreerobotics/unitree_rl_gym/blob/main/deploy/deploy_real/README.md)):
+  in Develop mode the legs **only bear load once the program commands the default pose at gains** — the bare damped
+  Develop state cannot stand, which is why you cannot "launch from Regular mode" and why the tether holds the weight
+  until move-to-default.
+- Off-hardware tests green: `lib/test_policy_deploy.py` **14/14**, `rl/deploy/test_v2_deploy_lift.py` **5/5**.
 
-**Operator runbook (every whole-body run).** Robot on a gantry, **feet on the ground, strap slack** (catches a fall
-in a few cm — never fully suspended). Hardware e-stop / battery in reach. Then:
-1. **Enter Develop mode by hand:** suspend → `L2+B` (damping) → `L2+R2`.
+**Operator runbook (every whole-body run).** Robot on a gantry. Hardware e-stop / battery in reach. Key fact: in
+low-level Develop mode the legs **only bear load once the program commands the default pose at gains** (the
+move-to-default); the bare damped Develop state cannot stand, so the **tether bears the weight until then**. Then:
+1. **Enter Develop mode by hand:** suspend → `L2+B` (damping) → `L2+R2`. The tether bears the weight here.
 2. `--stage offline` first (read-only) — confirm obs/joint-map/action and a small `|a|max` for the STAND command.
-3. `--stage whole --whole-mode stand` — the script verifies Develop mode, makes you **prove the abort latches**
-   (press+release), then move-to-default → STAND. Watch for a stable stand **by eye**, not telemetry.
-4. Only after a stable stand: `--whole-mode reach` (command ramps STAND→target).
+3. `--stage whole --whole-mode stand` — the script verifies Develop mode and makes you **prove the abort latches**
+   (press+release), then runs **move-to-default** (the legs ramp to a stiff standing stance and begin to bear load).
+4. **Tether — stage 1 (at the checkpoint):** the script then HOLDS at the default stance and waits. **Lower the
+   tether so the feet take the weight; verify by eye the robot stands on its OWN feet.** Start the policy by creating
+   the proceed file — `touch /tmp/whole_proceed` (`run_whole` polls it). Until then it holds and **any button aborts**;
+   if you never proceed it damps (fail-safe — the policy is never auto-started).
+5. **Tether — stage 2:** once the policy is stably balancing, **slacken the tether further** to a fall-catch only.
+   Verify a stable stand **by eye**, not telemetry.
+6. **Ending:** the run eases the command back to neutral (policy still balancing), then returns to the exact default
+   pose and eases stiffness off — **re-tension the tether** as it releases. Only after a stable STAND should you try
+   `--whole-mode reach` (the command ramps STAND→target, then returns the same way).
 - **Aborting a run = press ANY button.** In Develop mode the in-loop any-button latch catches it within one
   ~20 ms tick and runs the clean `kp=0` damp (`SafeStop`) — never hunt for a specific combo, just mash any button.
   Backstops if the process itself ever hangs: handheld **`L2+B`** firmware damp → hardware e-stop / battery.
@@ -473,6 +490,62 @@ in a few cm — never fully suspended). Hardware e-stop / battery in reach. Then
 **Status:** code-complete and tested off-hardware + the SDK API verified read-only against the robot's own SDK; the
 reworked whole-body rung (Develop-mode verify, abort-live handshake, `rt/lowcmd` QoS, move-to-default startup) still
 needs its **on-gantry live re-check**.
+
+### 10.3 Mode detection on the G1 EDU, and why the deployment is arm-overlay + vendor locomotion
+
+Staging the whole-body rung surfaced a hard problem: **how does the software know the robot is actually in low-level
+mode (high-level balancer off) before it commands `rt/lowcmd`?** The findings (verified live + against the Unitree
+SDK source and the developer forums):
+
+- **`MotionSwitcher.CheckMode()` cannot tell the modes apart.** On this G1 EDU it returns `name='ai'` in BOTH normal
+  AI-Sport mode AND a freshly-entered Develop mode (confirmed across a power-cycle) — it reports the *configured*
+  mode, not whether the balancer thread is running. **`rt/sportmodestate` is not published on this variant** either,
+  so the other obvious liveness signal is silent. No `LowState_` field (`mode_pr`, `mode_machine`, per-motor `mode`)
+  reports the active controller (Unitree SDK source; unitree_sdk2_python#43).
+- **The reliable signal is high-level *service liveness*.** The loco service is fully gone in Develop mode, so a
+  read-only loco GET-FSM RPC (`ROBOT_API_ID_LOCO_GET_FSM_ID` = 7001) **answers (code 0) in AI-Sport and
+  errors/times out in Develop** — verified live (Develop → code 3102). The deploy gate now uses this, not
+  `CheckMode`: service answers → refuse (a balancer is active); service down → proceed; probe unavailable → proceed
+  only on an explicit operator Develop assertion (fail-safe).
+- **`rt/lowcmd` against an active high-level controller does not cleanly take over — it jitters/oscillates** (the
+  controller keeps issuing its own commands; unitree_sdk2_python#43/#108). Whole-body `rt/lowcmd` is only valid when
+  the high-level controller is fully *off* (Develop mode), which is gantry territory.
+
+**Architecture decision — the bed-making deployment is arm-overlay + vendor locomotion, not whole-body `rt/lowcmd`.**
+Because the arm overlay (`rt/arm_sdk`) *blends* with the running balancer (`executed = controller·(1−w) + arm_sdk·w`,
+weight ramped 0→1; unitree_sdk2_python#108) instead of fighting it, the bedside reach is **fall-safe, gantry-free,
+and self-gating** (the overlay is a no-op if the balancer isn't running). So the real-robot path is: keep the robot
+balancing in Regular/AI-Sport mode, **walk to the bed with the vendor `LocoClient.Move`** (the
+[robotics-connect locomotion layer](https://github.com/armwaheed/robotics-connect)), and **reach with the arm
+overlay** — which is the rung we already eye-verified live (reach + smooth blended return). Whole-body `rt/lowcmd`
+(the v2 policy's own leg balancing) remains a **gantry-only, stand-only research path** behind the liveness gate; it
+is not the path to the task, because the task needs walking and `rt/lowcmd` cannot coexist with the AI walk. The
+move-to-default / operator-checkpoint / blended-return machinery stays in the generalized harness for robots/variants
+where full low-level takeover *is* the right call.
+
+### 10.4 Match the task to the robot — and do we need a new RL model? (No.)
+
+With the factory balancer holding the legs (the only viable mode on the 23-DOF EDU), the robot **cannot squat** to
+reach a low sheet — so the bedside reach is fundamentally an **upper-body** task. The design follows from that
+(descriptor-driven, so robotics-connect stays universal across the 23- and 29-DOF variants —
+[`lib/task_gate.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/task_gate.py)):
+
+- **Bed high enough → upper-body reach (no RL, fall-safe).** If the sheet is within the robot's **balance-safe
+  upper-body envelope**, reach it with a **deterministic arm trajectory** (IK via `unitree/g1/arm_fk` into safe joint
+  ranges) over the `rt/arm_sdk` overlay — exactly the rung we eye-verified. **No reinforcement-learning model is
+  needed**, and none needs to be trained: the existing v2 policy's arm outputs also work, but a deterministic reach
+  is simpler and sufficient.
+- **Bed too low + 23-DOF → decline and SPEAK.** Rather than topple, the robot says so via `unitree/g1/voice`
+  ("the bed is too low for me to reach safely without a whole-body motion policy, which I don't have").
+- **29-DOF → whole-body allowed.** A 29-DOF G1 with a gantry-validated whole-body policy may squat/CoM-shift (the
+  `deploy-policy` whole-body rung, liveness-gated). **We have no 29-DOF unit to test**, so this is a descriptor-gated
+  **stub** in robotics-connect — keeping the project universal without blocking the 23-DOF demo.
+
+So the priority is: **ship the 23-DOF demo on the upper-body path** (walk to the bed with `LocoClient`, deterministic
+arm reach over the balancer, decline-and-speak if out of envelope), while the whole-body path stays a gated,
+gantry-only research artifact. **Open question — is a whole-body motion policy achievable on the 23-DOF G1 EDU at
+all?** Pending Unitree engineering (tracked as a separate issue on armwaheed/robots); if yes, the descriptor's
+whole-body flag flips and the 23-DOF path can opt in.
 
 ## 11. Research, forums & references
 
