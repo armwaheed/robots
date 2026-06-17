@@ -547,6 +547,55 @@ gantry-only research artifact. **Open question — is a whole-body motion policy
 all?** Pending Unitree engineering (tracked as a separate issue on armwaheed/robots); if yes, the descriptor's
 whole-body flag flips and the 23-DOF path can opt in.
 
+### 10.5 Re-litigating the pull-load, and the live whole-body stand test (the honest record)
+
+Two questions were re-opened: *can the 23-DOF EDU survive a bedsheet draw load?* and *can it hold a
+whole-body stand under our policy at all?* Both were taken as far as is safe.
+
+**Pull-load (sim).** The reach env already trains against a FALCON-style grip-slip force (`randomize_ee_load`,
+≤ 35 N, random direction, on/off every 1–2.5 s). What it had never been tested against is a *sustained
+directional draw* — what pulling a sheet actually is. A new stress harness (`rl/pull_stress.py`) applies a
+constant horizontal force on the gripping hand, **outward along the reach side** (the worst case for
+balance — it drags the CoM toward the stance edge), one magnitude per env, rendered as a labelled montage
+(`media/rl/pull_load_stress.mp4`). Eye-verified: **the policy reaches and holds at 0 / 15 / 35 / 55 N
+for the full episode; at 75 N it collapses.** A realistic sheet drag is ~2–15 N (≈ 1× cloth weight, not 4×
+max-spec — cf. issue #5), so the policy carries a **~4–10× margin**, and headroom even past the 35 N
+training max. **Verdict: the draw load is not the topple risk — reach posture / reach-envelope is.** Caveat:
+this is the sim *RL policy*, not the real deploy path (arm-overlay + vendor balancer); the vendor-balancer
+side is a 5-minute real check (hang a known load on an arm-overlay reach and watch it hold), not a retrain.
+
+**Whole-body stand (live, 23-DOF EDU, on a slack gantry).** Four operator-driven runs of
+`g1_bedreach_deploy_v2.py --stage whole --whole-mode stand`:
+
+- ✅ **Move-to-default works** — the legs ramp from the slump to the commanded default stance under the
+  damping-first gain ramp, **no leg-shotgun**, and hold the stance at the checkpoint. Repeated cleanly 4×.
+- ✅ **Every safety gate held** — Develop-mode liveness check, the abort handshake (window widened
+  20 → 120 s, `abort_confirm_s`, since it's relayed over a remote console), and the SafeStop damp on every
+  abort. No damage across four runs.
+- ⚠️ **The default stance carries a forward CoM bias** — it leans gently forward (feet flat, tether-caught)
+  when weight transfers onto the *fixed* hold. Expected for a position-hold (not a balancer), but the
+  consistent forward direction points at a sim↔real CoM/mass gap (sim asset is the 29-DOF Inspire-hand
+  model; the real robot is 23-DOF + Brainco hands).
+- ❓ **Policy balance — inconclusive.** On engagement (its first time ever driving the real legs) the policy
+  **balanced for ~300 ms, then diverged into a limit cycle** ("kicking and dancing"). But the feet were
+  **under-loaded** (the tether still carried most of the weight), and `run_whole`'s own docstring warns that
+  *"a fully suspended balance policy is off-distribution → guaranteed flailing, NOT a useful test."* So this
+  is the **documented off-distribution failure, not a proven transfer failure.** The signature
+  (brief stability → growing oscillation, at only ~12 % blend) is a **closed-loop instability** — control
+  latency and/or PD-gain/action-scale mismatch and/or missing action smoothing — compounded by the
+  under-loading. A *fair* test needs the feet bearing (near-)full weight with a trusted fall-arrest that
+  catches within a few cm of tip — **which is the real blocker; the current tether cannot do "fully loaded
+  AND reliable catch" at once.**
+
+**What this settles.** Whole-body `rt/lowcmd` is confirmed the **wrong path for the 23-DOF EDU** — now not
+just on the mode/coexistence grounds of §10.3, but because the policy will not produce a clean stand under
+any loading we can *safely* reach. The demo's legs stay on the **vendor balancer** (arm-overlay +
+`LocoClient`); the whole-body policy remains a sim result. This is an *academic* question for the build
+(whole-body can't coexist with walking regardless), so it is **deprioritised, not chased** — pushing the
+tether slacker to "fairly" test a thrashing policy is both unsafe and symptom-chasing. If it is ever
+revisited: model + randomise action latency in training, system-ID and soften the deploy PD gains, add an
+output low-pass filter, filter the `joint_vel` obs, then retest with a real fall-arrest rig.
+
 ## 11. Research, forums & references
 
 **Sim-to-real RL — observation & training:**
