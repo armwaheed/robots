@@ -596,6 +596,27 @@ tether slacker to "fairly" test a thrashing policy is both unsafe and symptom-ch
 revisited: model + randomise action latency in training, system-ID and soften the deploy PD gains, add an
 output low-pass filter, filter the `joint_vel` obs, then retest with a real fall-arrest rig.
 
+**Post-test leads (2026-06-17).** Two findings sharpen the diagnosis — both point at *sim-asset /
+safety-layer* gaps rather than the policy itself:
+
+- **The sim used the wrong asset.** Training ran on the 29-DOF Inspire-hand mobile USD (locked DOFs),
+  **not** the real 23-DOF EDU URDF (`unitree_ros/robots/g1_description/g1_23dof_mode_10` or
+  `g1_23dof_rev_1_0`). That URDF has a **centred torso CoM** (`torso_link` CoM x≈0, mass 6.78 kg of a
+  ~32 kg robot) and **different hip gear ratios** ({22.5, 22.5} or {14.3, 22.5} by `mode_machine`) than
+  our asset — which plausibly explains **both** the forward-CoM lean **and** part of the limit cycle
+  (wrong effective gains). Fix, if whole-body is ever revisited: rebuild the sim asset from the correct
+  23-DOF URDF matching our unit's `mode_machine`, matching the gear ratios + inertials. (Ankle pitch
+  effort is only 35 N·m vs 139 for knee/hip — limited ankle authority to pull a forward CoM back.)
+- **The factory controller clamps motion off-ground; ours did not.** Operator observation: in factory
+  Regular mode, when a foot leaves the ground the leg motion becomes markedly gentler (reduced velocity
+  + range); our custom policy flailed violently. This is a **ground-contact-gated safety layer** — a
+  motion clamp, or a switch to a damped/hold mode (mechanism unconfirmed; asked Unitree). Key
+  distinction: replicating it would make our *failure* safer (a gentle flail), **not** make the policy
+  balance — a safety clamp is not a balance fix. The deeper point: **the vendor balancer already has
+  this protection, which is precisely why delegating balance to it (the arm-overlay path) is correct.**
+  (A ground-contact clamp could also make a fair full-load test *safe* on the standard gantry — but that
+  only matters if whole-body is ever revisited.)
+
 ## 11. Research, forums & references
 
 **Sim-to-real RL — observation & training:**
