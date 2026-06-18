@@ -15,18 +15,21 @@
 
 ## 1. The robot, in the room
 
-The EDU is standing in a home office; the bed is in the next room (the demo will walk it over). The
-whole IRL effort is grounded in *this* robot and *this* space — its sensors, its closed audio system,
-its real DOF.
+The 23-DOF G1 EDU (Brainco hands), working a real bed. The goal: **reach over the edge, grip the
+cover, and draw it** — arms only, on the `rt/arm_sdk` overlay while the **factory balancer holds the
+legs** (no whole-body release). The whole IRL effort is grounded in *this* robot and *this* space —
+its sensors, its closed audio system, its real DOF.
 
-| The G1 EDU at its post | What its head camera actually sees |
+| The task: reach → grip → draw the cover | The limit that reshaped the approach |
 |---|---|
-| ![G1 EDU standing by the table](media/irl/office_robot_standing.jpg) | ![head RGB — palette table + bottle](media/irl/head_rgb.jpg) |
+| ![G1 EDU reaching over the bed edge for the cover](media/irl/bedside_reach.jpg) | ![the forearm dragging the mattress on a low, open-loop approach](media/irl/bedside_forearm_contact.jpg) |
 
-*Left: the 23-DOF G1 EDU (Brainco hands) beside a small round table. Right: the **robot's own** head
-RealSense, down-tilted 51.29°, framing the near table and floor — not the room — exactly as
-`robotics-connect` characterized it (that pitch is why the **LiDAR**, not the camera, does room-scale
-detection).*
+*Left: the EDU reaches to grip and draw the cover, balance carried entirely by the vendor controller
+— live, the torso barely twisted and the factory balancer didn't even compensate. Right: the
+open-loop limit that drove today's architecture — the vision-less RL reach comes in too low and the
+**forearm drags the mattress**. Today's fix, validated on hardware: a **deterministic shoulder-wide
+lift** that clears the surface → an **RL come-in from shoulder height** → grip → draw → an
+**exact-reverse retraction**, with every transition (including the release) smoothly blended.*
 
 ---
 
@@ -616,6 +619,36 @@ safety-layer* gaps rather than the policy itself:
   this protection, which is precisely why delegating balance to it (the arm-overlay path) is correct.**
   (A ground-contact clamp could also make a fair full-load test *safe* on the standard gantry — but that
   only matters if whole-body is ever revisited.)
+
+### 10.6 On the bed (and a cot stand-in) — the arm-overlay reach, grip, and draw (2026-06-17)
+
+The deployment is the arm-overlay path of §10.3: the **factory balancer holds the legs**, the arms run
+on the `rt/arm_sdk` weight overlay, and the **same v2 RL policy** drives the reach. On hardware:
+
+- **Reach validated** at the bedside — smooth out, and a clean *blended* return to side. An un-blended
+  overlay release jerked the arm (the vendor snaps it across in one tick); fixed with a **mode-aware
+  damp that ramps the overlay weight down** (`robotics-connect` `g1_robot_io.damp_once`).
+- **The RL reach can't do a high, collision-free top-down approach** — its command box caps the hand
+  below shoulder height and a single hand-xyz can't hold a shoulders-wide pose, so it comes in low and
+  the forearm drags the surface (§1, right). **Fix = a hybrid** (`rl/deploy/g1_bed_pull_v2.py`): a
+  *deterministic* shoulder-wide **lift** (stay wide while extending so the arm clears the edge) → the
+  **RL policy comes in from shoulder height** → grip → draw → an **exact-reverse retraction** (retrace
+  the recorded path out so the hand can't snag on the way to side).
+- **The grip** is a separate effector (`bed_grip_v1.py` over the Brainco TCP bridge), sensor-gated on
+  fingertip force; soft fabric reads low, so the threshold is dropped.
+- **Load is the vendor's job, not the policy's.** During a draw the torso twist stayed within balance
+  limits and the **factory balancer didn't even compensate** — confirming that in overlay mode a
+  deterministic arm trajectory is as load-robust as the RL one (RL load-training matters only for the
+  ruled-out whole-body rung).
+- **Liveness-gate gotcha:** the loco mode probe false-negatives under DDS contention (a `LocoClient`
+  created after the 500 Hz `rt/lowstate` subscriber times out even when the balancer is up) — primed +
+  polled, with a clean-probe override.
+
+A flimsy fold-out cot (~8" above mattress height) served as a robustness stand-in; the full pipeline
+ran end-to-end (lift → come-in → grip → draw → reverse-retract — collision-free, balance untroubled).
+**Open for the real-bed run (tomorrow):** the draw must slide **laterally toward the headboard** (not
+inward toward the torso, fixed in `DRAW_TARGET`), and the fingers must capture a cover *fold* / hanging
+edge rather than press a flat top.
 
 ## 11. Research, forums & references
 
