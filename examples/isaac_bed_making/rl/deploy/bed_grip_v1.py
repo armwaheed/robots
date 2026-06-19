@@ -84,9 +84,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9877)
-    ap.add_argument("--grip-max", type=float, default=0.85, help="max close fraction (0=open,1=closed)")
-    ap.add_argument("--close-s", type=float, default=1.5,
-                    help="seconds to flex from open to grip-max — one smooth continuous close")
+    ap.add_argument("--grip-max", type=float, default=1.0,
+                    help="max close fraction (0=open,1=closed). FULL close (1.0): the fingers AND the "
+                         "thumb (flexion, in the adducted claw) clamp all the way for a firm fabric pinch "
+                         "— hardware-validated 2026-06-19 to give a strong multi-finger grab (index ~51 "
+                         "vs ~5 at the old 0.85 with the broken thumb).")
+    ap.add_argument("--close-s", type=float, default=0.7,
+                    help="seconds for the four FINGERS to flex from open to grip-max (fast, so they close "
+                         "decisively before the thumb). The thumb flexion is SEQUENCED after — see --thumb-lag-s.")
     ap.add_argument("--rate-hz", type=float, default=50.0, help="finger position command rate (Hz)")
     ap.add_argument("--thumb-claw", type=float, default=1.0,
                     help="thumb_aux opposition (0=slap/flat, 1=thumb opposed across palm = CLAW). The "
@@ -94,6 +99,13 @@ def main() -> None:
                          "cannot pinch thin fabric with a flat hand).")
     ap.add_argument("--claw-settle-s", type=float, default=0.6,
                     help="seconds to let the thumb travel to the claw position BEFORE closing the digits")
+    ap.add_argument("--thumb-lag-s", type=float, default=0.3,
+                    help="SETTLE seconds AFTER the fingers are fully closed before the thumb flexes in. "
+                         "The thumb does NOT flex until the fingers have completely closed (thumb_start = "
+                         "--close-s + this) — they catch on the BASE of the thumb if its flexion overlaps "
+                         "theirs at all, even slowly (operator-specified, 2026-06-19). The thumb stays "
+                         "OPPOSED (thumb_aux=claw) the whole time; only its flexion (thumb_curl) is "
+                         "sequenced. The close runs until the thumb is fully clamped.")
     ap.add_argument("--force-threshold", type=int, default=40,
                     help="per-finger touch-force rise (u16) that counts as contact (soft fabric reads "
                          "low — the old 800 never fired; observed grabs are ~10-40)")
@@ -122,6 +134,12 @@ def main() -> None:
                          "(FIRST-PASS — calibrate empty vs fabric on hardware)")
     ap.add_argument("--confirm-fingers", type=int, default=1,
                     help="fingers showing fabric (touch OR proximity) to confirm a grab")
+    ap.add_argument("--confirm-use-proximity", action="store_true",
+                    help="let proximity vote in the grasp verdict. OFF by default: the canonical bridge "
+                         "publishes proximity, but closing the claw swings the fingertips toward the "
+                         "palm/each other → |prox-baseline| spikes ~30000 on an EMPTY close (geometry, "
+                         "not fabric) → false-FABRIC. Needs a closed-empty baseline calibration first; "
+                         "until then the verdict is touch-only.")
     ap.add_argument("--confirm-hold-s", type=float, default=0.4,
                     help="seconds to HOLD the closed grip and re-sample before judging fabric-vs-empty. "
                          "PEAK != CAPTURE: a transient brush during the close slips off by full close "
@@ -194,46 +212,47 @@ def main() -> None:
         # Empty-grab confirmation: baseline the OPEN claw now (thumb opposed, fingers open — nothing
         # loaded yet), then watch touch + proximity through the close to decide fabric-vs-air.
         gc = GraspConfirmMonitor(force_rise=args.confirm_force_rise, prox_dev=args.confirm_prox_dev,
-                                 fingers_needed=args.confirm_fingers)
+                                 fingers_needed=args.confirm_fingers,
+                                 use_proximity=args.confirm_use_proximity)
         gc.baseline(br.get())
 
-        # One smooth, continuous flex: ramp the commanded close fraction at a fixed rate so the
-        # fingers move in a single motion (the old stepped setpoints + per-step pauses caused the
-        # intermittent flexion). Position is commanded every tick; the touch force is polled ~10 Hz
-        # so contact still stops the close early, just as before.
+        # CLOSE SEQUENCE (operator-specified 2026-06-19): the four FINGERS close COMPLETELY first while
+        # the thumb stays OPPOSED but UNFLEXED, then — only after the fingers are fully closed + a settle
+        # (--thumb-lag-s) — the thumb flexes in to clamp. The fingers catch on the BASE of the thumb if
+        # its flexion overlaps theirs AT ALL (even slow), so this is TRUE sequencing, not a head start.
+        # One smooth continuous flex per channel; touch polled ~10 Hz to feed the confirm.
         def _fired(force):
             return [i for i in range(min(len(force), len(base))) if force[i] - base[i] > args.force_threshold]
 
         gripped = False
-        g = 0.0
+        gf = gt = 0.0
         force = base
         dt = 1.0 / max(1.0, args.rate_hz)
-        speed = args.grip_max / max(1e-3, args.close_s)   # close fraction per second
+        speed = args.grip_max / max(1e-3, args.close_s)   # finger close fraction per second
+        thumb_start = args.close_s + args.thumb_lag_s     # thumb flexes ONLY after fingers fully close + settle
         t0 = time.time()
         next_poll = 0.0
         last_report = -1.0
         while True:
             elapsed = time.time() - t0
-            g = min(args.grip_max, speed * elapsed)
-            br.set_left(cmd(g))                            # thumb stays opposed; fingers ramp closed
-            if elapsed >= next_poll:                       # poll touch ~10 Hz (don't gate every tick)
+            gf = min(args.grip_max, speed * elapsed)                          # FINGERS close fully FIRST
+            gt = min(args.grip_max, speed * max(0.0, elapsed - thumb_start))  # THEN the thumb flexes in
+            br.set_left([gt, claw, gf, gf, gf, gf])        # thumb_curl=gt, thumb_aux=claw (held), fingers=gf
+            if elapsed >= next_poll:                        # poll touch ~10 Hz (don't gate every tick)
                 reading = br.get()
-                gc.update(reading)                         # feed the empty-grab confirm (touch + proximity)
+                gc.update(reading)                          # feed the empty-grab confirm
                 force = list(reading.get("left_touch_force") or [0] * 5)
                 next_poll = elapsed + 0.1
                 fired = _fired(force)
                 if elapsed - last_report > 0.2:
-                    print(f"[grip] close={g:.2f}  force={force}  contact_fingers={fired}")
+                    print(f"[grip] fingers={gf:.2f} thumb={gt:.2f}  force={force}  contact_fingers={fired}")
                     last_report = elapsed
-                if len(fired) >= args.fingers_needed:
-                    gripped = True
-                    break
-            if g >= args.grip_max - 1e-6:                  # reached max — final force check, then stop
+            if gt >= args.grip_max - 1e-6:                  # thumb clamped LAST → claw fully closed, done
                 reading = br.get()
                 gc.update(reading)
                 force = list(reading.get("left_touch_force") or [0] * 5)
                 gripped = len(_fired(force)) >= args.fingers_needed
-                print(f"[grip] close={g:.2f}  force={force}  contact_fingers={_fired(force)}")
+                print(f"[grip] fingers={gf:.2f} thumb={gt:.2f}  force={force}  contact_fingers={_fired(force)}")
                 break
             time.sleep(dt)
         print(f"[grip] {'GRIP established (sensor contact)' if gripped else 'closed to grip-max (no clear contact — best-effort)'}")
@@ -245,7 +264,7 @@ def main() -> None:
         gc.begin_hold()
         hold_end = time.time() + args.confirm_hold_s
         while time.time() < hold_end:
-            br.set_left(cmd(g))                            # keep holding the closed position
+            br.set_left(cmd(args.grip_max))                            # keep holding the closed position
             gc.update(br.get())
             time.sleep(0.05)
 
@@ -284,7 +303,7 @@ def main() -> None:
             if time.time() > t_end:
                 print("[grip] hold timeout — releasing")
                 break
-            br.set_left(cmd(g))                                  # keep holding the closed grip
+            br.set_left(cmd(args.grip_max))                                  # keep holding the closed grip
             held = max(gc.update(br.get())["force_rise"])        # strongest finger NOW vs the open-claw baseline
             if held < args.draw_lost_rise:
                 lost_since = lost_since or time.time()

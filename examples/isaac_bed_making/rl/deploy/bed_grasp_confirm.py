@@ -69,14 +69,26 @@ class GraspConfirmMonitor:
     verdict()/summary() after.
     """
 
-    def __init__(self, *, n_fingers=5, force_rise=6.0, prox_dev=150.0, fingers_needed=1, settle_samples=4):
+    def __init__(self, *, n_fingers=5, force_rise=6.0, prox_dev=150.0, fingers_needed=1, settle_samples=4,
+                 use_proximity=False, fabric_indices=None):
         self.n = n_fingers
+        # Which touch indices VOTE for fabric. Touch order is [thumb, index, middle, ring, pinky]; the
+        # THUMB pad (index 0) is EXCLUDED by default: in the thumb-clamp-last close the thumb presses
+        # straight onto the closed fingers, so its pad reads high (~600) on an EMPTY close (self-contact,
+        # not fabric — observed 2026-06-19). Fabric is sensed on the 4 finger pads (1-4), where every real
+        # grab registered. Pass fabric_indices explicitly to override.
+        self.fabric_indices = list(range(1, n_fingers)) if fabric_indices is None else list(fabric_indices)
         # force_rise HARDWARE-CALIBRATED 2026-06-19 (touch-only; proximity dead on this G1): empty floor
         # ≤1 (n=7), single-layer sheet 9-39 (n=6, min 9), 2-layer 81. 6 sits 6x over the empty floor
         # (false-fabric ~impossible) and below the weakest real grab. See bed_grip_v1.py --confirm-force-rise.
         self.force_rise = force_rise            # u16 SUSTAINED touch rise that counts as fabric (LOW: soft fabric)
         self.prox_dev = prox_dev                # u16 |proximity - baseline| that counts as something-in-claw
         self.fingers_needed = fingers_needed
+        # Proximity is OPT-IN (default OFF). The canonical bridge DOES publish left_proximity, but closing
+        # the claw swings the fingertips toward the palm/each other, so |prox - open_baseline| spikes
+        # ~30000 on an EMPTY close (geometry, not fabric) → false-FABRIC. It needs a closed-empty baseline
+        # before it can vote; until that calibration exists the verdict is touch-only. (2026-06-19)
+        self.use_proximity = use_proximity
         self.base_force = [0.0] * n_fingers
         self.base_prox = [0.0] * n_fingers
         self.peak_force_rise = [0.0] * n_fingers
@@ -139,13 +151,13 @@ class GraspConfirmMonitor:
 
     def _touch_fingers(self):
         s = self.sustained_force_rise
-        return [i for i in range(self.n) if s[i] >= self.force_rise]
+        return [i for i in self.fabric_indices if s[i] >= self.force_rise]
 
     def _prox_fingers(self):
-        if not self._prox_seen_nonzero:         # proximity dead/garbage → don't let it vote
-            return []
+        if not self.use_proximity or not self._prox_seen_nonzero:   # OFF by default (false-fires on close
+            return []                                               # geometry) / dead → don't let it vote
         s = self.sustained_prox_dev
-        return [i for i in range(self.n) if s[i] >= self.prox_dev]
+        return [i for i in self.fabric_indices if s[i] >= self.prox_dev]
 
     def fabric_present(self) -> bool:
         fingers = set(self._touch_fingers()) | set(self._prox_fingers())
@@ -154,8 +166,8 @@ class GraspConfirmMonitor:
     def _slipped(self) -> bool:
         """Peak fired but the sustained held grip did not → touched-but-didn't-capture (a slip)."""
         s = self.sustained_force_rise
-        peak_fired = any(self.peak_force_rise[i] >= self.force_rise for i in range(self.n))
-        held = any(s[i] >= self.force_rise for i in range(self.n))
+        peak_fired = any(self.peak_force_rise[i] >= self.force_rise for i in self.fabric_indices)
+        held = any(s[i] >= self.force_rise for i in self.fabric_indices)
         return peak_fired and not held
 
     def verdict(self) -> dict:
@@ -173,7 +185,7 @@ class GraspConfirmMonitor:
 
     def summary(self) -> str:
         v = self.verdict()
-        prox_note = "" if v["prox_usable"] else " [proximity dead — touch-only verdict]"
+        prox_note = "" if (self.use_proximity and v["prox_usable"]) else " [touch-only verdict]"
         if v["fabric_present"]:
             result = "FABRIC in hand"
         elif v["slipped"]:
