@@ -110,12 +110,13 @@ def main() -> None:
                     help="GATE the draw on fabric-in-hand: on an empty-grab verdict, write --empty-file, "
                          "skip --gripped-file, release. Default is measure-only (log the verdict, always "
                          "proceed) — calibrate the thresholds on hardware FIRST (analog of --abort-on-stall).")
-    ap.add_argument("--confirm-force-rise", type=float, default=6.0,
-                    help="per-finger touch-force rise (u16) over the open-claw baseline that counts as "
-                         "fabric. HARDWARE-CALIBRATED 2026-06-19 on this G1 (touch-only, proximity dead): "
-                         "empty floor ≤1 (n=7), single-layer sheet 9-39 (n=6, min 9), 2-layer 81. Set to 6 "
-                         "— 6x over the empty floor (false-fabric, the dangerous error, ~impossible) and "
-                         "below the weakest real grab (catches thin grabs the old 15 missed: 2/6 reps).")
+    ap.add_argument("--confirm-force-rise", type=float, default=4.0,
+                    help="per-finger SUSTAINED (held-grip) touch-force rise (u16) over the open-claw "
+                         "baseline that counts as fabric. HARDWARE-CALIBRATED 2026-06-19 (touch-only, "
+                         "proximity dead): empty/slip floor ≤2.5, light palm-up handoff grab ~4-5, solid "
+                         "grab 18-39. Set to 4 (above the slip floor, below the weakest real grab) so a "
+                         "light-but-real handoff grab isn't false-rejected — the MID-DRAW grip monitor "
+                         "(--draw-lost-rise) is the real backstop, catching a grab that slips WHILE drawing.")
     ap.add_argument("--confirm-prox-dev", type=float, default=150.0,
                     help="per-finger |proximity - baseline| (u16) that counts as something-in-claw "
                          "(FIRST-PASS — calibrate empty vs fabric on hardware)")
@@ -126,6 +127,15 @@ def main() -> None:
                          "PEAK != CAPTURE: a transient brush during the close slips off by full close "
                          "(false-success on a taut anchored sheet, 2026-06-19) — the verdict keys on "
                          "fabric STILL loaded over this hold, not a peak that already collapsed.")
+    ap.add_argument("--draw-lost-rise", type=float, default=3.0,
+                    help="MID-DRAW grip monitor: per-finger touch-force rise floor (u16) below which the "
+                         "grip is judged LOST during the draw (the sheet left the hand). A light grab can "
+                         "pass the pre-draw gate then slip while pulling — and the arm-side draw can't see "
+                         "it (empty and free draws read identical follow/tau on hardware), so the "
+                         "FINGERTIP watches. Below the gate so a steady light grab isn't flagged.")
+    ap.add_argument("--draw-lost-sustain", type=float, default=0.3,
+                    help="seconds the grip force must stay below --draw-lost-rise to call it lost (vs a "
+                         "transient dip while the fabric re-seats during the draw).")
     ap.add_argument("--no-wait", action="store_true", help="grip immediately (skip the arm-reached wait)")
     ap.add_argument("--present-claw", action="store_true",
                     help="show the OPEN claw (thumb opposed, fingers open) while waiting for the "
@@ -261,13 +271,39 @@ def main() -> None:
                   "--require-fabric once thresholds are calibrated)")
 
         open(args.gripped_file, "w").close()
-        print(f"[grip] signaled {args.gripped_file} — arm will draw. Holding grip until {args.draw_done_file}")
+        print(f"[grip] signaled {args.gripped_file} — arm drawing. HOLDING + monitoring grip until {args.draw_done_file}")
+        # MID-DRAW grip monitor — passing the pre-draw gate is NOT proof the grab survives the pull. A
+        # light grab can hold at the verdict then SLIP OUT mid-draw, and the arm-side draw can't tell
+        # (empty and free draws read identical follow/tau on hardware, 2026-06-19). So keep holding the
+        # closed grip and watch the FINGERTIP force: if it collapses while drawing, the sheet left the
+        # hand → write the empty sentinel so the draw aborts and the orchestrator escalates, instead of
+        # the arm reporting a confident false-success on an empty hand.
         t_end = time.time() + args.hold_timeout
+        lost_since = None
         while not os.path.exists(args.draw_done_file):
             if time.time() > t_end:
                 print("[grip] hold timeout — releasing")
                 break
-            time.sleep(0.1)
+            br.set_left(cmd(g))                                  # keep holding the closed grip
+            held = max(gc.update(br.get())["force_rise"])        # strongest finger NOW vs the open-claw baseline
+            if held < args.draw_lost_rise:
+                lost_since = lost_since or time.time()
+                if time.time() - lost_since >= args.draw_lost_sustain:
+                    print(f"[grip] ⚠ GRIP LOST mid-draw — fingertip force {held:.1f} < {args.draw_lost_rise} "
+                          f"for {args.draw_lost_sustain:.1f}s; the sheet left the hand.")
+                    if args.require_fabric:
+                        try:
+                            open(args.empty_file, "w").close()
+                        except OSError:
+                            pass
+                        print(f"[grip] wrote {args.empty_file} — honest failure (not a false-success). "
+                              f"THIS is the trigger to ask the human for help.")
+                        break
+                    print("[grip] (measure-only: grip-loss logged, NOT enforced — pass --require-fabric)")
+                    lost_since = None                            # measure-only: re-arm, keep holding
+            else:
+                lost_since = None
+            time.sleep(0.05)
 
         br.set_left([0.0] * 6)
         print("[grip] released (fingers open)")
