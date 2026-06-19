@@ -650,6 +650,56 @@ ran end-to-end (lift → come-in → grip → draw → reverse-retract — colli
 inward toward the torso, fixed in `DRAW_TARGET`), and the fingers must capture a cover *fold* / hanging
 edge rather than press a flat top.
 
+### 10.7 On the real bed — grasp mechanics, a human handoff, and a failure detector (2026-06-18)
+
+The real-bed run closed the loop on the grasp and produced the first **graceful-degradation** path —
+the robot that knows when it failed and asks a human, which is the Device Connect value proposition.
+
+- **Palm orientation is ours, not the policy's.** The hybrid put the hand on the hanging edge, but the
+  RL come-in left the *palm not facing the edge* — the thumb grazed and the fingers closed on nothing.
+  The G1 EDU arm is 5-DOF (wrist **roll** only), and the policy drives that roll to whatever serves the
+  hand-xyz target. Fix (`g1_bed_pull_v2.py --grasp-wrist-roll`): **override the wrist roll deterministically**
+  during the RL grasp (palm to the edge) while the policy keeps the shoulder+elbow reach — roll barely
+  moves the hand centre, so the reach is unaffected.
+- **You cannot pinch thin fabric with a flat hand.** The Brainco close is `thumb_aux` (0 = slap, 1 =
+  opposed) plus four fingers; closing all six together never forms a claw. Fix (`bed_grip_v1.py`):
+  **oppose the thumb into a claw first, let it settle, then close the digits into it** — as one smooth
+  continuous flex (the old stepped set-points caused intermittent flexion).
+- **Grasp + balance proven, task not yet.** With the claw and the palm right, the hand caught the cover —
+  but it caught the **fixed mattress cover** along with the sheet. Pulling the immovable cover twisted
+  the torso ~15° and the **factory balancer held it dead steady** (no rocking), correcting on the way
+  back. A pass for the *mechanics*; the free-sheet end-to-end pull is still owed.
+- **A deterministic human→robot handoff** (`rl/deploy/g1_bed_handoff_v1.py`, **no RL** — so the
+  "pull from an intermediate pose" is in-distribution by construction): approach via the collision-clearing
+  lift → **present palm-up, open claw** at a comfortable height → the human lays the sheet edge into the
+  hand and signals → claw closes → **deterministic draw** toward the head → exact-reverse retract.
+  Validated end-to-end on hardware. A bonus of the record-forward / replay-reverse retract: it **frees
+  the fabric from the hand without entangling it** (the hand backs off along the path it came in).
+
+  ![Handoff draw complete — the cover drawn toward the headboard, hand opened](media/irl/handoff_draw_complete.jpg)
+
+- **A pull-failure detector** (`rl/deploy/bed_fail_detect.py`) — so the robot *knows* when it grabbed the
+  cover instead of the sheet. Calibrated free-vs-anchored on hardware: the two signals that separate ~2×
+  are **following error** (commanded−actual, a torque proxy under the PD overlay: ~0.18 free / ~0.35
+  anchored rad) and **`tau_est`** (~7 / ~14). Demoted to logged-only after the data disagreed with
+  intuition: base-IMU **yaw** (~0.1° either way — the pelvis IMU misses the upper-torso twist you *see*)
+  and joint **velocity** (~0 either way — the deterministic ramp saturates, so the arm settles to rest
+  whether free or stuck). A sustained over-threshold (past a startup-transient warm-up) writes
+  `/tmp/pull_failed`.
+- **The orchestrator** (`rl/deploy/g1_bed_orchestrator.py`) ties it together into the demo state machine:
+  **autonomous attempt(s) → detect failure (`/tmp/pull_failed`) → ASK THE HUMAN (Device Connect) →
+  deterministic handoff fallback → done**. Graceful degradation *is* the value — the robot escalates
+  instead of silently believing it succeeded. The state machine is dry-run-validated end-to-end; the
+  live bedside run is the next step.
+
+**Open / next:** the live orchestrator run; **empty-grab** detection (today's detector catches *anchored
+stall*, not *grabbed-nothing*); **vision** (not LiDAR — same height/geometry can't tell sheet from cover)
+for autonomous self-positioning; and walking the drawn sheet to the headboard (a separate task). A code-debt
+note: the deterministic-overlay scaffolding (blend / rate-limited ramp / reverse-retract / abort) is now
+duplicated between `g1_bed_pull_v2.py` and `g1_bed_handoff_v1.py` and should be factored into a shared
+arm-overlay helper (with a hardware re-validation) — deliberately deferred rather than refactor
+just-validated code blind.
+
 ## 11. Research, forums & references
 
 **Sim-to-real RL — observation & training:**

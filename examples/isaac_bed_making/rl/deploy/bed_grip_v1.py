@@ -6,8 +6,9 @@ Talks to the running ``brainco_bridge`` (TCP JSON on 127.0.0.1:9877) — NOT the
 
 Sequence (sentinel handshake with g1_bed_pull_v1.py):
   1. wait for ``--arm-reached-file`` (the arm has reached the sheet and is holding)
-  2. close the LEFT fingers in steps, gating on the touch force rising above the idle baseline;
-     stop early once enough fingers register contact (a grip), else close to ``--grip-max``
+  2. oppose the thumb laterally into a CLAW (``thumb_aux``→``--thumb-claw``) and let it settle, then
+     close the four fingers + thumb_curl in ONE smooth continuous flex (ramped over ``--close-s``) into
+     the opposed thumb, gating on the touch force; stop on contact (a grip), else close to ``--grip-max``
   3. create ``--gripped-file``  → the arm starts the draw
   4. hold the grip (the hand servos hold the last commanded position) until ``--draw-done-file``
   5. release (open the fingers)
@@ -82,16 +83,28 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9877)
     ap.add_argument("--grip-max", type=float, default=0.85, help="max close fraction (0=open,1=closed)")
-    ap.add_argument("--grip-step", type=float, default=0.1, help="close increment per step")
-    ap.add_argument("--step-pause", type=float, default=0.35, help="seconds between close steps")
-    ap.add_argument("--force-threshold", type=int, default=800,
-                    help="per-finger touch-force rise (u16) that counts as contact")
-    ap.add_argument("--fingers-needed", type=int, default=2, help="fingers in contact to call it a grip")
+    ap.add_argument("--close-s", type=float, default=1.5,
+                    help="seconds to flex from open to grip-max — one smooth continuous close")
+    ap.add_argument("--rate-hz", type=float, default=50.0, help="finger position command rate (Hz)")
+    ap.add_argument("--thumb-claw", type=float, default=1.0,
+                    help="thumb_aux opposition (0=slap/flat, 1=thumb opposed across palm = CLAW). The "
+                         "thumb is moved here FIRST so the digits close into the opposed thumb (you "
+                         "cannot pinch thin fabric with a flat hand).")
+    ap.add_argument("--claw-settle-s", type=float, default=0.6,
+                    help="seconds to let the thumb travel to the claw position BEFORE closing the digits")
+    ap.add_argument("--force-threshold", type=int, default=40,
+                    help="per-finger touch-force rise (u16) that counts as contact (soft fabric reads "
+                         "low — the old 800 never fired; observed grabs are ~10-40)")
+    ap.add_argument("--fingers-needed", type=int, default=1, help="fingers in contact to call it a grip")
     ap.add_argument("--hold-timeout", type=float, default=120.0, help="max grip hold before auto-release")
     ap.add_argument("--arm-reached-file", default="/tmp/arm_reached")
     ap.add_argument("--gripped-file", default="/tmp/sheet_gripped")
     ap.add_argument("--draw-done-file", default="/tmp/draw_done")
     ap.add_argument("--no-wait", action="store_true", help="grip immediately (skip the arm-reached wait)")
+    ap.add_argument("--present-claw", action="store_true",
+                    help="show the OPEN claw (thumb opposed, fingers open) while waiting for the "
+                         "arm-reached signal — for the human handoff: the hand is ready to receive the "
+                         "sheet, then closes on the signal.")
     ap.add_argument("--dry", action="store_true", help="read-only: print touch/proximity, NO finger motion")
     args = ap.parse_args()
 
@@ -101,6 +114,15 @@ def main() -> None:
         raise SystemExit(f"[grip] cannot reach brainco_bridge at {args.host}:{args.port} ({e}). "
                          "Start the bridge first (brainco_touch).")
 
+    # Clear OUR own coordination sentinels up front so a standalone/repeat run can't act on a stale
+    # gripped/draw-done from a previous run (the arm-side script clears them too; this makes grip
+    # safe to run on its own).
+    for f in (args.gripped_file, args.draw_done_file):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
     try:
         st = br.get()
         print(f"[grip] left_touch_ok={st.get('left_touch_ok')}  "
@@ -109,23 +131,65 @@ def main() -> None:
             print("[grip:dry] OK (no finger motion commanded)")
             return
 
+        if args.present_claw:                               # handoff: show the open claw while waiting
+            claw0 = max(0.0, min(1.0, args.thumb_claw))
+            print(f"[grip] presenting OPEN claw (thumb_aux={claw0:.2f}, fingers open) — place the sheet")
+            br.set_left([0.0, claw0, 0.0, 0.0, 0.0, 0.0])
+
         if not args.no_wait and not _wait_for(args.arm_reached_file, args.hold_timeout, print):
             return
 
         base = list(st.get("left_touch_force") or [0] * 5)
         print(f"[grip] baseline touch force = {base}")
+
+        # Motor order for set/get is [thumb_curl, thumb_aux, index, middle, ring, pinky]; thumb_aux is
+        # the LATERAL thumb (0=slap/flat, 1=opposed across the palm = claw). You cannot pinch thin
+        # fabric with a flat hand, so FIRST move the thumb laterally into the claw and let it settle,
+        # THEN close only the four fingers + thumb_curl into the opposed thumb (thumb_aux held).
+        claw = max(0.0, min(1.0, args.thumb_claw))
+
+        def cmd(g):  # finger close fraction g, with the thumb held in the claw (thumb_aux=claw)
+            return [g, claw, g, g, g, g]
+
+        print(f"[grip] pre-positioning thumb → claw (thumb_aux={claw:.2f}), settling {args.claw_settle_s:.1f}s")
+        br.set_left(cmd(0.0))                              # fingers open, thumb opposed
+        time.sleep(args.claw_settle_s)
+
+        # One smooth, continuous flex: ramp the commanded close fraction at a fixed rate so the
+        # fingers move in a single motion (the old stepped setpoints + per-step pauses caused the
+        # intermittent flexion). Position is commanded every tick; the touch force is polled ~10 Hz
+        # so contact still stops the close early, just as before.
+        def _fired(force):
+            return [i for i in range(min(len(force), len(base))) if force[i] - base[i] > args.force_threshold]
+
         gripped = False
         g = 0.0
-        while g < args.grip_max - 1e-6:
-            g = min(args.grip_max, g + args.grip_step)
-            br.set_left([g] * 6)
-            time.sleep(args.step_pause)
-            force = list(br.get().get("left_touch_force") or [0] * 5)
-            fired = [i for i in range(min(len(force), len(base))) if force[i] - base[i] > args.force_threshold]
-            print(f"[grip] close={g:.2f}  force={force}  contact_fingers={fired}")
-            if len(fired) >= args.fingers_needed:
-                gripped = True
+        force = base
+        dt = 1.0 / max(1.0, args.rate_hz)
+        speed = args.grip_max / max(1e-3, args.close_s)   # close fraction per second
+        t0 = time.time()
+        next_poll = 0.0
+        last_report = -1.0
+        while True:
+            elapsed = time.time() - t0
+            g = min(args.grip_max, speed * elapsed)
+            br.set_left(cmd(g))                            # thumb stays opposed; fingers ramp closed
+            if elapsed >= next_poll:                       # poll touch ~10 Hz (don't gate every tick)
+                force = list(br.get().get("left_touch_force") or [0] * 5)
+                next_poll = elapsed + 0.1
+                fired = _fired(force)
+                if elapsed - last_report > 0.2:
+                    print(f"[grip] close={g:.2f}  force={force}  contact_fingers={fired}")
+                    last_report = elapsed
+                if len(fired) >= args.fingers_needed:
+                    gripped = True
+                    break
+            if g >= args.grip_max - 1e-6:                  # reached max — final force check, then stop
+                force = list(br.get().get("left_touch_force") or [0] * 5)
+                gripped = len(_fired(force)) >= args.fingers_needed
+                print(f"[grip] close={g:.2f}  force={force}  contact_fingers={_fired(force)}")
                 break
+            time.sleep(dt)
         print(f"[grip] {'GRIP established (sensor contact)' if gripped else 'closed to grip-max (no clear contact — best-effort)'}")
 
         open(args.gripped_file, "w").close()

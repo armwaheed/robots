@@ -28,6 +28,7 @@ import os
 import time
 
 from bed_deploy_common import ARM_JOINTS, ARM_LIMITS, LEFT_ARM, RIGHT_ARM, load, rc_root
+from bed_fail_detect import DrawResistanceMonitor, read_arm_tau
 
 # Deterministic LEFT-arm lift waypoints (joint-space, rad). Principle: shoulder stays rolled WIDE
 # (high +roll abducts the left arm out to the side) while the elbow extends, so the arm rises and
@@ -53,7 +54,8 @@ DRAW_TARGET = [0.45, 0.35, -0.10, 1.0, 0.0, 0.0, 0.0]
 
 def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, lift_s, comein_s,
                      draw_s, draw_hold_s, blend_s, vmax_rad_s, hold_timeout_s,
-                     arm_reached_file, gripped_file, draw_done_file, log=print):
+                     arm_reached_file, gripped_file, draw_done_file, grasp_wrist_roll=None,
+                     monitor=None, abort_on_stall=False, fail_file="/tmp/pull_failed", log=print):
     if not io.arm_abort():
         log("[pull2] abort not armed (release all controller buttons) — refusing")
         return False
@@ -83,8 +85,10 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             time.sleep(dt)
         return True
 
-    def rl_step(command, seconds, label, record=True):
-        """Run the RL policy toward `command` (hand_target); apply LEFT arm only, hold right."""
+    def rl_step(command, seconds, label, record=True, monitor=None, abort_on_stall=False):
+        """Run the RL policy toward `command` (hand_target); apply LEFT arm only, hold right.
+        If `monitor` is given, watch for an anchored-load stall each tick (and stop the sweep early
+        when `abort_on_stall` — there is nothing to gain by pulling harder on something that won't move)."""
         n = max(1, int(seconds / dt))
         for k in range(n):
             if io.abort_tripped():
@@ -94,12 +98,29 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             obs, _ = dep.obs.build(state, command, dep.last_action)
             tq = dep.targets(dep.infer(obs))
             for j in LEFT_ARM:
-                cmdq[j] += max(-max_step, min(max_step, _clamp(j, tq[j]) - cmdq[j]))
+                # Palm orientation is OURS, not the policy's: the EDU arm is 5-DOF (wrist ROLL only),
+                # and the policy drives the wrist roll to whatever serves the hand-xyz target — which
+                # leaves the palm NOT facing the quilt edge (the fingers close on nothing; the thumb
+                # grazes — observed 2026-06-18). So when --grasp-wrist-roll is set we override the
+                # wrist roll to a fixed grasp orientation (palm toward the edge) and let the policy
+                # keep the shoulder+elbow reach. Wrist roll barely moves the hand center, so the reach
+                # is unaffected — only the palm rotates to oppose the hanging fabric.
+                goal = grasp_wrist_roll if (grasp_wrist_roll is not None
+                                            and j == "left_wrist_roll_joint") else tq[j]
+                cmdq[j] += max(-max_step, min(max_step, _clamp(j, goal) - cmdq[j]))
             for j in RIGHT_ARM:
                 cmdq[j] = right_hold[j]
             io.publish_targets(cmdq, gains, weight=1.0)
             if record:
                 traj.append(dict(cmdq))
+            if monitor is not None:
+                m = monitor.update(state, cmdq, read_arm_tau(io, LEFT_ARM))
+                if k % 20 == 0:
+                    log(f"[pull2] {label}: follow={m['follow']:.3f} dq={m['dq']:.3f} "
+                        f"tau={m['tau']:.2f} yaw={m['yaw']:.1f}")
+                if m["tripped"] and abort_on_stall:
+                    log(f"[pull2] STALL detected during {label} — stopping the pull early (anchored load)")
+                    break
             time.sleep(dt)
         return True
 
@@ -120,7 +141,7 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             time.sleep(dt)
         return True
 
-    for f in (arm_reached_file, gripped_file, draw_done_file):
+    for f in (arm_reached_file, gripped_file, draw_done_file, fail_file):
         try:
             os.remove(f)
         except OSError:
@@ -139,8 +160,12 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
                 return False
 
         if lift_only:                                              # validation: stop after the lift
-            log("[pull2] --lift-only: holding the lifted pose 2 s, then releasing (eye-verify clearance)")
-            t_end = time.time() + 2.0
+            if grasp_wrist_roll is not None:                       # eye-verify the palm orientation too
+                log(f"[pull2] --lift-only: orienting wrist roll → {grasp_wrist_roll:.2f} (palm eye-verify)")
+                if not ramp_to({"left_wrist_roll_joint": grasp_wrist_roll}, 1.5, "wrist-orient"):
+                    return False
+            log("[pull2] --lift-only: holding the lifted pose 3 s, then releasing (eye-verify clearance/palm)")
+            t_end = time.time() + 3.0
             while time.time() < t_end:
                 if io.abort_tripped():
                     return log("[pull2] abort during lift-hold") or False
@@ -165,11 +190,23 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             else:
                 gripped = True
                 log("[pull2] grip confirmed — drawing")
-            if gripped:                                            # RL DRAW
-                if not rl_step(draw_target, draw_s, "rl-draw"):
+            if gripped:                                            # RL DRAW (watched for stall)
+                if monitor is not None:
+                    monitor.start(io.read_state())
+                if not rl_step(draw_target, draw_s, "rl-draw", monitor=monitor,
+                               abort_on_stall=abort_on_stall):
                     return False
                 open(draw_done_file, "w").close()
                 log(f"[pull2] draw complete — signaled {draw_done_file}")
+                if monitor is not None:
+                    log(f"[pull2] DRAW VERDICT: {monitor.summary()}")
+                    if monitor.tripped:
+                        try:
+                            open(fail_file, "w").close()
+                        except OSError:
+                            pass
+                        log(f"[pull2] ⚠ pull FAILED (anchored load — likely grabbed the mattress cover). "
+                            f"wrote {fail_file}. THIS is the trigger to ask the human for help.")
                 if not rl_step(draw_target, draw_hold_s, "rl-draw-hold"):
                     return False
             else:
@@ -194,11 +231,15 @@ def main() -> None:
     ap.add_argument("--grip-target", type=float, nargs=7, default=GRIP_TARGET)
     ap.add_argument("--draw-target", type=float, nargs=7, default=DRAW_TARGET)
     ap.add_argument("--lift-only", action="store_true", help="do ONLY the deterministic lift, then release")
+    ap.add_argument("--grasp-wrist-roll", type=float, default=None,
+                    help="override left_wrist_roll_joint (rad, ±1.9) during the RL grasp so the palm "
+                         "faces the quilt edge; the policy keeps the shoulder+elbow reach. With "
+                         "--lift-only, also orients the wrist after the lift to eye-verify the palm.")
     ap.add_argument("--lift-s", type=float, default=3.0, help="seconds per lift waypoint")
     ap.add_argument("--comein-s", type=float, default=5.0, help="seconds for the RL come-in + descend")
     ap.add_argument("--draw-s", type=float, default=4.0, help="seconds for the RL draw")
-    ap.add_argument("--draw-hold", type=float, default=1.0)
-    ap.add_argument("--blend", type=float, default=1.2)
+    ap.add_argument("--draw-hold", type=float, default=1.0, help="seconds to hold at the drawn pose")
+    ap.add_argument("--blend", type=float, default=1.2, help="seconds to blend the arm overlay in/out")
     ap.add_argument("--vmax", type=float, default=1.0, help="arm joint rate limit (rad/s)")
     ap.add_argument("--hold-timeout", type=float, default=90.0)
     ap.add_argument("--assume-balancer-up", action="store_true",
@@ -207,6 +248,19 @@ def main() -> None:
     ap.add_argument("--arm-reached-file", default="/tmp/arm_reached")
     ap.add_argument("--gripped-file", default="/tmp/sheet_gripped")
     ap.add_argument("--draw-done-file", default="/tmp/draw_done")
+    # Pull-failure detector (anchored-load / grabbed-the-mattress-cover stall during the draw).
+    ap.add_argument("--stall-follow", type=float, default=0.28,
+                    help="following-error threshold (rad) — free pull ~0.18, anchored ~0.35 (cal 2026-06-18)")
+    ap.add_argument("--stall-tau", type=float, default=11.0,
+                    help="joint-torque threshold — free pull ~7, anchored ~14 (cal 2026-06-18)")
+    ap.add_argument("--stall-yaw", type=float, default=6.0,
+                    help="torso IMU yaw-drift threshold (deg) — logged only (base IMU misses the twist)")
+    ap.add_argument("--stall-sustain", type=float, default=0.5,
+                    help="seconds a signal must stay over threshold to call it a stall (vs a transient)")
+    ap.add_argument("--abort-on-stall", action="store_true",
+                    help="stop the draw early when a stall is detected (default: measure + verdict only)")
+    ap.add_argument("--fail-file", default="/tmp/pull_failed",
+                    help="sentinel written when the draw is judged a stall — the ask-the-human trigger")
     args = ap.parse_args()
 
     rc = rc_root()
@@ -219,11 +273,15 @@ def main() -> None:
         raise SystemExit(f"{args.contract} carries no gains — overlay would be zero-torque.")
     print(f"[pull2] rc={rc}  contract={os.path.basename(args.contract)} ({contract.n}j, {contract.obs_total_dim}D)")
     print(f"[pull2] mode={'LIFT-ONLY' if args.lift_only else 'lift→RL come-in→grip→draw'}  "
-          f"grip={args.grip_target}  draw={args.draw_target}")
+          f"grip={args.grip_target}  draw={args.draw_target}  "
+          f"grasp_wrist_roll={args.grasp_wrist_roll}")
 
     io = g1io.G1RobotIO(iface=args.iface, names=contract.action_joint_names)
     io.connect()
     dep = pd.PolicyDeploy(contract, args.policy, io)
+    monitor = DrawResistanceMonitor(LEFT_ARM, dep.dt, follow_thresh_rad=args.stall_follow,
+                                    tau_thresh=args.stall_tau, yaw_thresh_deg=args.stall_yaw,
+                                    sustain_s=args.stall_sustain)
     try:
         if not args.assume_balancer_up:
             if io._high_level_service_alive() is False:
@@ -238,7 +296,8 @@ def main() -> None:
             lift_s=args.lift_s, comein_s=args.comein_s, draw_s=args.draw_s, draw_hold_s=args.draw_hold,
             blend_s=args.blend, vmax_rad_s=args.vmax, hold_timeout_s=args.hold_timeout,
             arm_reached_file=args.arm_reached_file, gripped_file=args.gripped_file,
-            draw_done_file=args.draw_done_file,
+            draw_done_file=args.draw_done_file, grasp_wrist_roll=args.grasp_wrist_roll,
+            monitor=monitor, abort_on_stall=args.abort_on_stall, fail_file=args.fail_file,
         )
     finally:
         io.shutdown()
