@@ -749,7 +749,93 @@ vision fabric-in-hand cue (folded into the vision work already on the list).
 
 **Open follow-up:** complete the sheet-side measurement using the PROVEN `bed_grip_v1.py` converging
 close (the grasp that worked on 2026-06-18), not isolated bench thumb poses; then set `--confirm-force-rise`
-from the air-vs-sheet split and enable `--require-fabric`.
+from the air-vs-sheet split and enable `--require-fabric`. **[Done 2026-06-19 — see §10.9.]**
+
+### 10.9 Calibrated, validated end-to-end, and a grasp rebuilt (2026-06-19)
+
+A long bedside session took the empty-grab guard from measure-only to **calibrated + enforced**, scored
+the **first fully-autonomous end-to-end success on a *free* sheet**, validated the **ask-the-human →
+handoff** path live, and — after two hardware root-causes — **rebuilt the claw grasp** so it grips
+firmly. Every claim below was checked on the robot or by eye.
+
+**Sheet-side calibration (closes §10.8's follow-up).** Using the proven converging close, the empty
+floor held a hard **`[0,0,0,0,0]`** (≤1 over 7 closes) and a single draped layer read **9–39** on the
+strongest finger (n=6) — a clean gap, so touch-only *does* separate fabric from air on this G1.
+`--confirm-force-rise` was set from that split and `--require-fabric` validated both ways (real grab →
+`sheet_gripped`; bare air → `grab_empty`).
+
+![Empty-grab touch separation: empty/air ≤1 vs 1-layer 9–39 vs 2-layer 81](media/irl/empty_grab_separation.png)
+
+*The held-grip verdict (thumb pad excluded, touch-only) cleanly separates an empty/air close (≤1) from a
+single draped layer (≥9) — a real gap, so touch alone is a usable fabric-vs-air discriminator on this G1.*
+
+**PEAK ≠ CAPTURE — a real false-success caught and killed.** A taut/tucked sheet exposed a hole: the
+claw *brushed* the fabric (a finger's force peaked over threshold) but, with no slack to pinch, the sheet
+**slipped off** and force collapsed to ~0 by full close; the empty hand then "drew" freely and the
+orchestrator reported success. The draw cannot catch this — a **free sheet loads the arm about as little
+as air** (empty and free draws read an indistinguishable `follow ~0.10 / tau ~4`; only an *anchored* load
+separates), so this *must* be caught at the hand. The verdict now keys on fabric **still loaded while
+HOLDING the closed grip** (median over a short held window), not a transient peak; and a **mid-draw grip
+monitor** is the real backstop — the grip watches the fingertip force through the draw and writes
+`grab_empty` if it collapses. Validated on hardware: empty → EMPTY, real grab → FABRIC, taut brush-slip →
+EMPTY (slipped).
+
+![Draw-resistance signatures: empty ≈ free, only anchored stalls](media/irl/draw_signatures.png)
+
+*Why the slip must be caught at the hand, not the arm: an empty/slipped draw and a real free-sheet draw
+are nearly indistinguishable on the arm (following-error ~0.10–0.30, torque ~4–7); only an **anchored**
+cover crosses the stall thresholds. The fingertip is the only place that sees the sheet leave the hand.*
+
+**First autonomous end-to-end success on a free sheet.** `g1_bed_orchestrator.py --require-fabric
+--assume-balancer-up` (after a clean-context `GET_FSM_ID` 0 gate): deterministic lift → RL come-in onto
+the quilt → **claw closed on the free sheet** (confirm: FABRIC) → **RL draw moved freely** (`follow 0.24
+< 0.28`, `tau 4.4 < 11` — the free-sheet signature) → retract → damp. The §10.7 baseline had only ever
+grabbed the *anchored* cover; this is the task — move a free sheet — shown end-to-end **autonomously**,
+with the empty-grab guard live in the loop.
+
+**Graceful degradation, live.** With the taut setup the autonomous attempt correctly flags the slip →
+`grab_empty` → skip draw → **ask-the-human** → **handoff present** — the whole Device Connect story
+executed on hardware (previously only `--dry`).
+
+**Two hardware root-causes (the real value of the day).**
+1. **Thumb claw.** The claw came out a curled thumb, not a crab-claw, and palm-up handoff grabs read
+   weak (~5). Root cause: a **stale Brainco bridge** running from a *competing dev environment*
+   (`/home/unitree/brainco_touch/`, an April copy with the old naive thumb byte-packing) that **swapped
+   the two thumb channels**. The deploy code and git were byte-identical to the proven baseline — nothing
+   in the repo had regressed. Fix: run the **canonical bridge from the robotics-connect checkout**
+   (`/home/unitree/robotics-connect-deploy/unitree/g1/brainco_touch/`, which fixed the packing *and*
+   publishes proximity); the stale loose copy was synced to canonical with a `CANONICAL_SOURCE.txt`
+   pointer so it can't bite again. *Lesson: on-robot assets must come from the robotics-connect checkout,
+   not loose copies — and a "regression" with byte-identical code means a stale/wrong asset, not a bug.*
+2. **Weak grip.** Even with the right claw, grabs were weak because the close ramped the thumb flexion
+   **together** with the fingers, so the fingers caught on the **base of the opposed thumb** and never
+   closed around the fabric. Fix: a **sequenced close** — the four fingers close fully first, then (after
+   a settle) the thumb flexes in to clamp — at a full `--grip-max 1.0` in the adducted claw. A one-layer
+   grab went from **~5 to 51–108** across the finger pads. The confirm was hardened too: the **thumb pad
+   is excluded** from the fabric vote (it self-contacts the closed fingers in the clamp-last close), and
+   **proximity is opt-in** (the canonical bridge publishes it, but it spikes ~30 000 on an *empty* close
+   from the claw geometry, so it false-fires until baselined closed-empty).
+
+![Grasp strength before vs after the sequenced-close fix: ~5 → 51 → 108](media/irl/grasp_strength_before_after.png)
+
+*The day's headline result: fixing the stale-bridge thumb-claw and sequencing the close (fingers close
+fully, then the thumb clamps last) took the strongest finger-pad reading from ~5 to **51–108** — the weak,
+marginal grabs that dogged the handoff are gone.*
+
+**Handoff, end-to-end with the fixed grasp.** Re-ran the handoff: the robot presented the palm-up
+crab-claw, the human laid the sheet, the close fired **all four finger pads** (index 108) → FABRIC →
+**drew the sheet to the head** (`follow 0.30, tau 7.25` — a *real* sheet load now, higher than the
+empty/weak draws because the firm grab actually moves fabric) → retract → damp.
+
+**Housekeeping.** A code-review pass removed a dead legacy contact-gating subsystem and fixed stale
+docstrings/defaults; the robotics-connect assets the deploy loads were verified against canonical and
+synced (only `policy_deploy.py` was stale — a docstring-only diff).
+
+**Open items for the next session.** (a) Re-tune the stall threshold (0.28, calibrated on the anchored
+cover) before enabling `--abort-on-stall` — a firm free-sheet draw now peaks `follow ~0.30`. (b) Make
+`robotics-connect-deploy` a real git checkout so `git pull` keeps it best-of-breed (the stale-copy hazard
+above). (c) Proximity as a real second signal needs a closed-empty baseline. (d) Stiffer waist/torso-yaw
+to resist the ~5° accordion twist; and the robot still needs to **walk** the drawn sheet to the headboard.
 
 ## 11. Research, forums & references
 
