@@ -121,6 +121,11 @@ def main() -> None:
                          "(FIRST-PASS — calibrate empty vs fabric on hardware)")
     ap.add_argument("--confirm-fingers", type=int, default=1,
                     help="fingers showing fabric (touch OR proximity) to confirm a grab")
+    ap.add_argument("--confirm-hold-s", type=float, default=0.4,
+                    help="seconds to HOLD the closed grip and re-sample before judging fabric-vs-empty. "
+                         "PEAK != CAPTURE: a transient brush during the close slips off by full close "
+                         "(false-success on a taut anchored sheet, 2026-06-19) — the verdict keys on "
+                         "fabric STILL loaded over this hold, not a peak that already collapsed.")
     ap.add_argument("--no-wait", action="store_true", help="grip immediately (skip the arm-reached wait)")
     ap.add_argument("--present-claw", action="store_true",
                     help="show the OPEN claw (thumb opposed, fingers open) while waiting for the "
@@ -222,6 +227,17 @@ def main() -> None:
                 break
             time.sleep(dt)
         print(f"[grip] {'GRIP established (sensor contact)' if gripped else 'closed to grip-max (no clear contact — best-effort)'}")
+
+        # HELD re-measure — PEAK != CAPTURE. A transient brush during the dynamic close is NOT a grab:
+        # on a taut/anchored sheet a finger's force spikes then the fabric SLIPS OFF, collapsing to ~0 by
+        # full close (false-success observed 2026-06-19). Hold the closed grip and sample so the verdict
+        # keys on fabric STILL loaded, not a peak that already decayed.
+        gc.begin_hold()
+        hold_end = time.time() + args.confirm_hold_s
+        while time.time() < hold_end:
+            br.set_left(cmd(g))                            # keep holding the closed position
+            gc.update(br.get())
+            time.sleep(0.05)
 
         # Empty-grab verdict — fabric-in-hand or closed-on-nothing? The pull-failure detector is BLIND
         # to this (a draw on air reads perfectly free), so confirm it here before signaling the draw.

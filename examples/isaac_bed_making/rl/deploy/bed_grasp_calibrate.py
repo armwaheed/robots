@@ -31,8 +31,9 @@ from bed_grasp_confirm import GraspConfirmMonitor
 from bed_grip_v1 import Bridge
 
 
-def close_and_measure(br, *, grip_max, close_s, rate_hz, thumb_claw, claw_settle_s, log=print):
-    """Present the open claw, baseline, ramp the fingers FULLY closed once, return the peak verdict."""
+def close_and_measure(br, *, grip_max, close_s, rate_hz, thumb_claw, claw_settle_s, hold_s=0.4, log=print):
+    """Present the open claw, baseline, ramp the fingers FULLY closed once, HOLD the closed grip, and
+    return the SUSTAINED held verdict (peak != capture — a brush that slips off by full close is empty)."""
     claw = max(0.0, min(1.0, thumb_claw))
 
     def cmd(g):  # [thumb_curl, thumb_aux, index, middle, ring, pinky]; thumb held opposed
@@ -58,10 +59,17 @@ def close_and_measure(br, *, grip_max, close_s, rate_hz, thumb_claw, claw_settle
             gc.update(br.get())
             break
         time.sleep(dt)
+    gc.begin_hold()                                        # HOLD the closed grip and re-sample (sustained)
+    hold_end = time.time() + hold_s
+    while time.time() < hold_end:
+        br.set_left(cmd(g))
+        gc.update(br.get())
+        time.sleep(0.05)
     br.set_left([0.0] * 6)                                 # release
     v = gc.verdict()
-    # the verdict keys on the STRONGEST finger (fingers_needed=1), so cluster on the max across fingers
-    return {"force": max(v["peak_force_rise"]), "prox": max(v["peak_prox_dev"]),
+    # the verdict keys on the STRONGEST finger (fingers_needed=1), so cluster on the max across fingers,
+    # using the SUSTAINED held rise (not the transient peak — peak != capture).
+    return {"force": max(v["sustained_force_rise"]), "prox": max(v["sustained_prox_dev"]),
             "prox_usable": v["prox_usable"], "raw": v}
 
 
