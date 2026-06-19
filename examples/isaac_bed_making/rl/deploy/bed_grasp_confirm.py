@@ -69,7 +69,7 @@ class GraspConfirmMonitor:
     verdict()/summary() after.
     """
 
-    def __init__(self, *, n_fingers=5, force_rise=6.0, prox_dev=150.0, fingers_needed=1, settle_samples=4,
+    def __init__(self, *, n_fingers=5, force_rise=4.0, prox_dev=150.0, fingers_needed=1, settle_samples=4,
                  use_proximity=False, fabric_indices=None):
         self.n = n_fingers
         # Which touch indices VOTE for fabric. Touch order is [thumb, index, middle, ring, pinky]; the
@@ -78,9 +78,11 @@ class GraspConfirmMonitor:
         # not fabric — observed 2026-06-19). Fabric is sensed on the 4 finger pads (1-4), where every real
         # grab registered. Pass fabric_indices explicitly to override.
         self.fabric_indices = list(range(1, n_fingers)) if fabric_indices is None else list(fabric_indices)
-        # force_rise HARDWARE-CALIBRATED 2026-06-19 (touch-only; proximity dead on this G1): empty floor
-        # ≤1 (n=7), single-layer sheet 9-39 (n=6, min 9), 2-layer 81. 6 sits 6x over the empty floor
-        # (false-fabric ~impossible) and below the weakest real grab. See bed_grip_v1.py --confirm-force-rise.
+        # force_rise HARDWARE-CALIBRATED 2026-06-19 (touch-only; proximity dead on this G1). With the FIXED
+        # sequenced close, real grabs read STRONG on the finger pads (index ~50-110); the empty/slip floor
+        # is ≤2.5. 4 sits above that floor and well below a real grab — and is the single source of truth
+        # with bed_grip_v1.py's --confirm-force-rise default. The HELD-grip verdict + mid-draw monitor are
+        # the real backstops.
         self.force_rise = force_rise            # u16 SUSTAINED touch rise that counts as fabric (LOW: soft fabric)
         self.prox_dev = prox_dev                # u16 |proximity - baseline| that counts as something-in-claw
         self.fingers_needed = fingers_needed
