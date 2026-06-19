@@ -23,11 +23,14 @@ Signals — both already in the brainco_bridge `get` telemetry, no harness chang
 Verdict = FABRIC PRESENT if (max touch rise >= force_rise) OR (max proximity deviation >= prox_dev)
 on at least `fingers_needed` fingers, sustained past a short settle. Otherwise EMPTY GRAB.
 
-Like the stall detector: thresholds here are FIRST-PASS and MUST be calibrated on hardware before the
-verdict is trusted to gate the demo. Capture ~5 empty closes and ~5 real-fabric closes, read the peaks
-this monitor logs, set force_rise / prox_dev between the two clusters, THEN run bed_grip_v1.py with
---require-fabric (the analog of the pull detector's --abort-on-stall). Until then it is measure-only:
-it logs a verdict and never changes the control flow.
+CALIBRATION STATUS (this G1): the TOUCH threshold (force_rise) is hardware-calibrated 2026-06-19 to 6
+(empty floor ≤1 over n=7 closes; single-layer sheet 9-39 over n=6, min 9; 2-layer 81) and validated live
+under --require-fabric (real grabs proceed, true empties write /tmp/grab_empty). Proximity is DEAD on
+this hardware (the bridge never publishes left_proximity), so the verdict runs touch-only and prox_dev is
+unused here — it stays a FIRST-PASS guess for any G1 whose bridge does publish proximity. The original
+procedure (capture ~5 empty + ~5 fabric closes, set the threshold between the clusters, THEN enable
+--require-fabric — the analog of the pull detector's --abort-on-stall) is automated in
+bed_grasp_calibrate.py. Re-run it if the fabric or hand changes.
 
 Bias on purpose: when the two signals disagree or proximity reads garbage, prefer to DECLARE EMPTY
 (escalate to the human) over claiming a grab — a false "I have the sheet" is the failure we are here to
@@ -56,8 +59,11 @@ class GraspConfirmMonitor:
     sensor poll during the close, then read verdict()/summary() after the close completes.
     """
 
-    def __init__(self, *, n_fingers=5, force_rise=15.0, prox_dev=150.0, fingers_needed=1):
+    def __init__(self, *, n_fingers=5, force_rise=6.0, prox_dev=150.0, fingers_needed=1):
         self.n = n_fingers
+        # force_rise HARDWARE-CALIBRATED 2026-06-19 (touch-only; proximity dead on this G1): empty floor
+        # ≤1 (n=7), single-layer sheet 9-39 (n=6, min 9), 2-layer 81. 6 sits 6x over the empty floor
+        # (false-fabric ~impossible) and below the weakest real grab. See bed_grip_v1.py --confirm-force-rise.
         self.force_rise = force_rise            # u16 touch rise that counts as fabric contact (LOW: soft fabric)
         self.prox_dev = prox_dev                # u16 |proximity - baseline| that counts as something-in-claw
         self.fingers_needed = fingers_needed

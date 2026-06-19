@@ -110,9 +110,12 @@ def main() -> None:
                     help="GATE the draw on fabric-in-hand: on an empty-grab verdict, write --empty-file, "
                          "skip --gripped-file, release. Default is measure-only (log the verdict, always "
                          "proceed) — calibrate the thresholds on hardware FIRST (analog of --abort-on-stall).")
-    ap.add_argument("--confirm-force-rise", type=float, default=15.0,
+    ap.add_argument("--confirm-force-rise", type=float, default=6.0,
                     help="per-finger touch-force rise (u16) over the open-claw baseline that counts as "
-                         "fabric (LOWER than --force-threshold: a real soft-fabric grab reads ~10-40)")
+                         "fabric. HARDWARE-CALIBRATED 2026-06-19 on this G1 (touch-only, proximity dead): "
+                         "empty floor ≤1 (n=7), single-layer sheet 9-39 (n=6, min 9), 2-layer 81. Set to 6 "
+                         "— 6x over the empty floor (false-fabric, the dangerous error, ~impossible) and "
+                         "below the weakest real grab (catches thin grabs the old 15 missed: 2/6 reps).")
     ap.add_argument("--confirm-prox-dev", type=float, default=150.0,
                     help="per-finger |proximity - baseline| (u16) that counts as something-in-claw "
                          "(FIRST-PASS — calibrate empty vs fabric on hardware)")
