@@ -68,7 +68,7 @@ DRAW_POSE = {
 def run_handoff(dep_dt, io, SafeStop, *, present_only, approach_waypoints, handoff_pose, draw_pose,
                 present_s, draw_s, draw_hold_s, blend_s, vmax_rad_s, hold_timeout_s, gains,
                 gripped_file, draw_done_file, monitor=None, abort_on_stall=False,
-                fail_file="/tmp/pull_failed", log=print):
+                fail_file="/tmp/pull_failed", empty_file="/tmp/grab_empty", log=print):
     if not io.arm_abort():
         log("[handoff] abort not armed (release all controller buttons) — refusing")
         return False
@@ -126,7 +126,7 @@ def run_handoff(dep_dt, io, SafeStop, *, present_only, approach_waypoints, hando
             time.sleep(dt)
         return True
 
-    for f in (gripped_file, draw_done_file, fail_file):
+    for f in (gripped_file, draw_done_file, fail_file, empty_file):
         try:
             os.remove(f)
         except OSError:
@@ -159,6 +159,9 @@ def run_handoff(dep_dt, io, SafeStop, *, present_only, approach_waypoints, hando
             while not os.path.exists(gripped_file):                # HOLD for the human + grip
                 if io.abort_tripped():
                     return log("[handoff] abort during present-hold") or False
+                if os.path.exists(empty_file):                     # grip confirmed EMPTY (sheet not placed right)
+                    log("[handoff] EMPTY GRAB signaled — the sheet was not in the hand; skipping the draw")
+                    break
                 if time.time() > t_end:
                     log("[handoff] handoff timeout — no grip; skipping the draw")
                     break
@@ -225,6 +228,8 @@ def main() -> None:
     ap.add_argument("--stall-sustain", type=float, default=0.5, help="seconds over-threshold to call a stall")
     ap.add_argument("--abort-on-stall", action="store_true", help="stop the draw early on a detected stall")
     ap.add_argument("--fail-file", default="/tmp/pull_failed", help="sentinel written on a stall verdict")
+    ap.add_argument("--empty-file", default="/tmp/grab_empty",
+                    help="sentinel the grip writes on an EMPTY grab (sheet not in hand); skips the draw")
     args = ap.parse_args()
 
     handoff_pose = dict(HANDOFF_POSE)
@@ -268,6 +273,7 @@ def main() -> None:
             blend_s=args.blend, vmax_rad_s=args.vmax, hold_timeout_s=args.hold_timeout, gains=dep.gains(),
             gripped_file=args.gripped_file, draw_done_file=args.draw_done_file,
             monitor=monitor, abort_on_stall=args.abort_on_stall, fail_file=args.fail_file,
+            empty_file=args.empty_file,
         )
     finally:
         io.shutdown()

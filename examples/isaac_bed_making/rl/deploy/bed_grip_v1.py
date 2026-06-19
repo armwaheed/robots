@@ -25,6 +25,8 @@ import os
 import socket
 import time
 
+from bed_grasp_confirm import GraspConfirmMonitor
+
 
 class Bridge:
     def __init__(self, host, port):
@@ -100,6 +102,22 @@ def main() -> None:
     ap.add_argument("--arm-reached-file", default="/tmp/arm_reached")
     ap.add_argument("--gripped-file", default="/tmp/sheet_gripped")
     ap.add_argument("--draw-done-file", default="/tmp/draw_done")
+    # Empty-grab confirmation (did the claw close on FABRIC or on NOTHING?). See bed_grasp_confirm.py.
+    ap.add_argument("--empty-file", default="/tmp/grab_empty",
+                    help="sentinel written when the close is judged an EMPTY grab — the ask-the-human "
+                         "trigger for 'closed on nothing' (only written under --require-fabric)")
+    ap.add_argument("--require-fabric", action="store_true",
+                    help="GATE the draw on fabric-in-hand: on an empty-grab verdict, write --empty-file, "
+                         "skip --gripped-file, release. Default is measure-only (log the verdict, always "
+                         "proceed) — calibrate the thresholds on hardware FIRST (analog of --abort-on-stall).")
+    ap.add_argument("--confirm-force-rise", type=float, default=15.0,
+                    help="per-finger touch-force rise (u16) over the open-claw baseline that counts as "
+                         "fabric (LOWER than --force-threshold: a real soft-fabric grab reads ~10-40)")
+    ap.add_argument("--confirm-prox-dev", type=float, default=150.0,
+                    help="per-finger |proximity - baseline| (u16) that counts as something-in-claw "
+                         "(FIRST-PASS — calibrate empty vs fabric on hardware)")
+    ap.add_argument("--confirm-fingers", type=int, default=1,
+                    help="fingers showing fabric (touch OR proximity) to confirm a grab")
     ap.add_argument("--no-wait", action="store_true", help="grip immediately (skip the arm-reached wait)")
     ap.add_argument("--present-claw", action="store_true",
                     help="show the OPEN claw (thumb opposed, fingers open) while waiting for the "
@@ -117,7 +135,7 @@ def main() -> None:
     # Clear OUR own coordination sentinels up front so a standalone/repeat run can't act on a stale
     # gripped/draw-done from a previous run (the arm-side script clears them too; this makes grip
     # safe to run on its own).
-    for f in (args.gripped_file, args.draw_done_file):
+    for f in (args.gripped_file, args.draw_done_file, args.empty_file):
         try:
             os.remove(f)
         except OSError:
@@ -155,6 +173,12 @@ def main() -> None:
         br.set_left(cmd(0.0))                              # fingers open, thumb opposed
         time.sleep(args.claw_settle_s)
 
+        # Empty-grab confirmation: baseline the OPEN claw now (thumb opposed, fingers open — nothing
+        # loaded yet), then watch touch + proximity through the close to decide fabric-vs-air.
+        gc = GraspConfirmMonitor(force_rise=args.confirm_force_rise, prox_dev=args.confirm_prox_dev,
+                                 fingers_needed=args.confirm_fingers)
+        gc.baseline(br.get())
+
         # One smooth, continuous flex: ramp the commanded close fraction at a fixed rate so the
         # fingers move in a single motion (the old stepped setpoints + per-step pauses caused the
         # intermittent flexion). Position is commanded every tick; the touch force is polled ~10 Hz
@@ -175,7 +199,9 @@ def main() -> None:
             g = min(args.grip_max, speed * elapsed)
             br.set_left(cmd(g))                            # thumb stays opposed; fingers ramp closed
             if elapsed >= next_poll:                       # poll touch ~10 Hz (don't gate every tick)
-                force = list(br.get().get("left_touch_force") or [0] * 5)
+                reading = br.get()
+                gc.update(reading)                         # feed the empty-grab confirm (touch + proximity)
+                force = list(reading.get("left_touch_force") or [0] * 5)
                 next_poll = elapsed + 0.1
                 fired = _fired(force)
                 if elapsed - last_report > 0.2:
@@ -185,12 +211,35 @@ def main() -> None:
                     gripped = True
                     break
             if g >= args.grip_max - 1e-6:                  # reached max — final force check, then stop
-                force = list(br.get().get("left_touch_force") or [0] * 5)
+                reading = br.get()
+                gc.update(reading)
+                force = list(reading.get("left_touch_force") or [0] * 5)
                 gripped = len(_fired(force)) >= args.fingers_needed
                 print(f"[grip] close={g:.2f}  force={force}  contact_fingers={_fired(force)}")
                 break
             time.sleep(dt)
         print(f"[grip] {'GRIP established (sensor contact)' if gripped else 'closed to grip-max (no clear contact — best-effort)'}")
+
+        # Empty-grab verdict — fabric-in-hand or closed-on-nothing? The pull-failure detector is BLIND
+        # to this (a draw on air reads perfectly free), so confirm it here before signaling the draw.
+        gv = gc.verdict()
+        print(f"[grip] GRASP VERDICT: {gc.summary()}")
+        if args.require_fabric and not gv["fabric_present"]:
+            # Enforced: do NOT signal the draw on an empty hand. Write the empty-grab sentinel (the
+            # ask-the-human trigger), release, and exit — the arm-side script breaks its grip-wait on
+            # this file and skips the draw, and the orchestrator escalates exactly like /tmp/pull_failed.
+            try:
+                open(args.empty_file, "w").close()
+            except OSError:
+                pass
+            print(f"[grip] ⚠ EMPTY GRAB — closed on nothing. wrote {args.empty_file}; NOT signaling the "
+                  f"draw. THIS is the trigger to ask the human for help.")
+            br.set_left([0.0] * 6)
+            print("[grip] released (fingers open)")
+            return
+        if not gv["fabric_present"]:
+            print("[grip] (measure-only: empty-grab verdict logged but NOT enforced — pass "
+                  "--require-fabric once thresholds are calibrated)")
 
         open(args.gripped_file, "w").close()
         print(f"[grip] signaled {args.gripped_file} — arm will draw. Holding grip until {args.draw_done_file}")

@@ -55,7 +55,8 @@ DRAW_TARGET = [0.45, 0.35, -0.10, 1.0, 0.0, 0.0, 0.0]
 def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, lift_s, comein_s,
                      draw_s, draw_hold_s, blend_s, vmax_rad_s, hold_timeout_s,
                      arm_reached_file, gripped_file, draw_done_file, grasp_wrist_roll=None,
-                     monitor=None, abort_on_stall=False, fail_file="/tmp/pull_failed", log=print):
+                     monitor=None, abort_on_stall=False, fail_file="/tmp/pull_failed",
+                     empty_file="/tmp/grab_empty", log=print):
     if not io.arm_abort():
         log("[pull2] abort not armed (release all controller buttons) — refusing")
         return False
@@ -141,7 +142,7 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             time.sleep(dt)
         return True
 
-    for f in (arm_reached_file, gripped_file, draw_done_file, fail_file):
+    for f in (arm_reached_file, gripped_file, draw_done_file, fail_file, empty_file):
         try:
             os.remove(f)
         except OSError:
@@ -182,6 +183,9 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             while not os.path.exists(gripped_file):
                 if io.abort_tripped():
                     return log("[pull2] abort during grip hold") or False
+                if os.path.exists(empty_file):             # grip confirmed EMPTY (closed on nothing)
+                    log("[pull2] EMPTY GRAB signaled by the grip — skipping the draw (no sheet in hand)")
+                    break
                 if time.time() > t_end:
                     log("[pull2] grip timeout — skipping the draw")
                     break
@@ -261,6 +265,8 @@ def main() -> None:
                     help="stop the draw early when a stall is detected (default: measure + verdict only)")
     ap.add_argument("--fail-file", default="/tmp/pull_failed",
                     help="sentinel written when the draw is judged a stall — the ask-the-human trigger")
+    ap.add_argument("--empty-file", default="/tmp/grab_empty",
+                    help="sentinel the grip writes on an EMPTY grab (closed on nothing); skips the draw")
     args = ap.parse_args()
 
     rc = rc_root()
@@ -298,6 +304,7 @@ def main() -> None:
             arm_reached_file=args.arm_reached_file, gripped_file=args.gripped_file,
             draw_done_file=args.draw_done_file, grasp_wrist_roll=args.grasp_wrist_roll,
             monitor=monitor, abort_on_stall=args.abort_on_stall, fail_file=args.fail_file,
+            empty_file=args.empty_file,
         )
     finally:
         io.shutdown()

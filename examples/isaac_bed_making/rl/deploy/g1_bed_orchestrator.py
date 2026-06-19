@@ -21,10 +21,13 @@ Ties together the three pieces built 2026-06-18 into the value story:
 Per the original spec: try autonomously up to --max-attempts (default 2), THEN hand off. (I argued one
 honest attempt may demo better than two visible failures — so it is tunable; set --max-attempts 1.)
 
-Known v1 limitation: the autonomous attempt is judged FAILED only on the anchored-stall signal
-(/tmp/pull_failed). An EMPTY grab (claw closes on nothing) would currently read as success — the
-detector catches "pulled something that won't move", not "grabbed nothing". Noted for the next pass
-(touch/vision confirmation of fabric-in-hand).
+An autonomous attempt is judged FAILED on EITHER failure signal: an anchored stall (/tmp/pull_failed,
+the calibrated draw-resistance verdict) OR an empty grab (/tmp/grab_empty, the grasp-confirm verdict —
+the claw closed on nothing). The empty-grab guard closes the old blind spot where a draw on air read as
+success. It is ENFORCED only under --require-fabric; default is measure-only (the grip logs a grasp
+verdict but still proceeds) until the touch/proximity thresholds are calibrated on hardware — the same
+measure-first discipline as the stall detector's --abort-on-stall. (Open follow-up: a stronger
+fabric-in-hand cue from vision, for when both touch and proximity are marginal.)
 
 --dry simulates the state transitions with NO robot motion (verify the logic). Live needs the robot
 stood in Regular mode at the bedside and a clean GET_FSM_ID 0 (pass --assume-balancer-up).
@@ -39,7 +42,7 @@ import time
 DEPLOY = "/home/unitree/bedreach_deploy"
 RC = "/home/unitree/robotics-connect-deploy"
 SENTINELS = ["/tmp/arm_reached", "/tmp/grab_go", "/tmp/sheet_gripped", "/tmp/draw_done",
-             "/tmp/pull_failed", "/tmp/robot_needs_help", "/tmp/human_ack"]
+             "/tmp/pull_failed", "/tmp/grab_empty", "/tmp/robot_needs_help", "/tmp/human_ack"]
 
 
 def banner(msg: str) -> None:
@@ -91,8 +94,11 @@ def autonomous_attempt(n: int, args) -> bool:
     banner(f"AUTONOMOUS ATTEMPT {n}/{args.max_attempts} — reach · grasp · draw")
     clear_sentinels(args.dry)
     py = ["python", "-u"]
-    grip = _bg(py + ["bed_grip_v1.py"], "/tmp/orch_grip.log", args.dry)
-    pull_cmd = py + ["g1_bed_pull_v2.py", "--abort-on-stall"]
+    grip_cmd = py + ["bed_grip_v1.py", "--empty-file", args.empty_file]
+    if args.require_fabric:                          # gate the draw on fabric-in-hand (empty-grab guard)
+        grip_cmd.append("--require-fabric")
+    grip = _bg(grip_cmd, "/tmp/orch_grip.log", args.dry)
+    pull_cmd = py + ["g1_bed_pull_v2.py", "--abort-on-stall", "--empty-file", args.empty_file]
     if args.assume_balancer_up:
         pull_cmd.append("--assume-balancer-up")
     if args.grasp_wrist_roll is not None:
@@ -103,16 +109,20 @@ def autonomous_attempt(n: int, args) -> bool:
 
     if args.dry:
         failed = n <= args.dry_fail_attempts        # simulate: first N attempts fail
+        empty = failed and args.dry_fail_reason == "empty"
     else:
-        # FAIL if the detector flagged an anchored stall OR the attempt crashed/was killed (a non-zero
-        # exit must NOT read as success — that would defeat the whole "robot knows it failed" point).
+        # FAIL if: the grasp closed on NOTHING (empty grab), the detector flagged an anchored stall, OR
+        # the attempt crashed/was killed. A non-zero exit must NOT read as success, and neither may an
+        # empty grab — a confident false-success is the exact failure this escalation path exists to kill.
         crashed = pull is not None and pull.returncode not in (0, None)
         if crashed:
             print(f"  (autonomous attempt exited {pull.returncode} — treating as failure)", flush=True)
-        failed = crashed or os.path.exists(args.fail_file)
+        empty = os.path.exists(args.empty_file)
+        failed = crashed or empty or os.path.exists(args.fail_file)
     if failed:
-        print(f"  ✗ attempt {n} FAILED — anchored/stalled draw (likely grabbed the mattress cover).",
-              flush=True)
+        reason = ("empty grab — the claw closed on nothing (no sheet in hand)" if empty
+                  else "anchored/stalled draw (likely grabbed the mattress cover)")
+        print(f"  ✗ attempt {n} FAILED — {reason}.", flush=True)
         return False
     print(f"  ✓ attempt {n} succeeded — the draw moved freely.", flush=True)
     return True
@@ -152,9 +162,12 @@ def handoff(args) -> bool:
     banner("HANDOFF — present palm-up claw · human places the sheet · draw")
     clear_sentinels(args.dry)
     py = ["python", "-u"]
-    grip = _bg(py + ["bed_grip_v1.py", "--present-claw", "--arm-reached-file", "/tmp/grab_go"],
-               "/tmp/orch_grip.log", args.dry)
-    hand_cmd = py + ["g1_bed_handoff_v1.py"]
+    grip_cmd = py + ["bed_grip_v1.py", "--present-claw", "--arm-reached-file", "/tmp/grab_go",
+                     "--empty-file", args.empty_file]
+    if args.require_fabric:
+        grip_cmd.append("--require-fabric")
+    grip = _bg(grip_cmd, "/tmp/orch_grip.log", args.dry)
+    hand_cmd = py + ["g1_bed_handoff_v1.py", "--empty-file", args.empty_file]
     if args.assume_balancer_up:
         hand_cmd.append("--assume-balancer-up")
     hand = _bg(hand_cmd, "/tmp/orch_handoff.log", args.dry)
@@ -165,8 +178,11 @@ def handoff(args) -> bool:
     if args.dry:
         ok = not args.dry_handoff_fail
     else:
+        # The handoff writes /tmp/draw_done in BOTH its drew-the-sheet and no-grip branches, so require
+        # a clean exit, no stall verdict, AND no empty-grab (the human's placement actually took).
         crashed = hand is not None and hand.returncode not in (0, None)
-        ok = (not crashed) and os.path.exists("/tmp/draw_done") and not os.path.exists(args.fail_file)
+        ok = ((not crashed) and os.path.exists("/tmp/draw_done")
+              and not os.path.exists(args.fail_file) and not os.path.exists(args.empty_file))
     print(f"  {'✓ handoff drew the sheet.' if ok else '✗ handoff did not complete.'}", flush=True)
     return ok
 
@@ -177,12 +193,19 @@ def main() -> None:
     ap.add_argument("--assume-balancer-up", action="store_true")
     ap.add_argument("--grasp-wrist-roll", type=float, default=-1.5, help="palm-to-edge roll for the autonomous grasp")
     ap.add_argument("--fail-file", default="/tmp/pull_failed")
+    ap.add_argument("--empty-file", default="/tmp/grab_empty",
+                    help="empty-grab sentinel (claw closed on nothing) — an autonomous-attempt failure")
+    ap.add_argument("--require-fabric", action="store_true",
+                    help="enforce fabric-in-hand: an empty grab aborts the draw and escalates (like a "
+                         "stall). Default measure-only — enable after the confirm thresholds are calibrated.")
     ap.add_argument("--help-hook", default=None, help="shell command to notify the human (Device Connect)")
     ap.add_argument("--ack-timeout", type=float, default=60.0, help="seconds to wait for human ack")
     ap.add_argument("--attempt-timeout", type=float, default=120.0)
     ap.add_argument("--handoff-timeout", type=float, default=180.0)
     ap.add_argument("--dry", action="store_true", help="simulate the state machine, NO robot motion")
     ap.add_argument("--dry-fail-attempts", type=int, default=99, help="[dry] how many attempts fail")
+    ap.add_argument("--dry-fail-reason", choices=["stall", "empty"], default="stall",
+                    help="[dry] why the simulated attempts fail — exercises the stall vs empty-grab message")
     ap.add_argument("--dry-handoff-fail", action="store_true", help="[dry] make the handoff fail too")
     args = ap.parse_args()
 

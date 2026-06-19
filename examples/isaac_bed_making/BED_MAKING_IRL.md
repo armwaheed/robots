@@ -692,13 +692,49 @@ the robot that knows when it failed and asks a human, which is the Device Connec
   instead of silently believing it succeeded. The state machine is dry-run-validated end-to-end; the
   live bedside run is the next step.
 
-**Open / next:** the live orchestrator run; **empty-grab** detection (today's detector catches *anchored
-stall*, not *grabbed-nothing*); **vision** (not LiDAR — same height/geometry can't tell sheet from cover)
-for autonomous self-positioning; and walking the drawn sheet to the headboard (a separate task). A code-debt
-note: the deterministic-overlay scaffolding (blend / rate-limited ramp / reverse-retract / abort) is now
-duplicated between `g1_bed_pull_v2.py` and `g1_bed_handoff_v1.py` and should be factored into a shared
-arm-overlay helper (with a hardware re-validation) — deliberately deferred rather than refactor
+**Open / next:** the live orchestrator run; **vision** (not LiDAR — same height/geometry can't tell sheet
+from cover) for autonomous self-positioning; and walking the drawn sheet to the headboard (a separate task).
+A code-debt note: the deterministic-overlay scaffolding (blend / rate-limited ramp / reverse-retract /
+abort) is now duplicated between `g1_bed_pull_v2.py` and `g1_bed_handoff_v1.py` and should be factored into a
+shared arm-overlay helper (with a hardware re-validation) — deliberately deferred rather than refactor
 just-validated code blind.
+
+### 10.8 Empty-grab confirmation — closing the detector's blind spot (2026-06-19)
+
+The §10.7 draw-resistance detector catches an *anchored stall* (pulled something that won't move — the
+fixed cover) but is **blind to the opposite failure: an empty grab**. If the claw closes on nothing, the
+"draw" sweeps air, following-error and `tau` read perfectly *free*, no `/tmp/pull_failed` is written, and
+the orchestrator reports **success** while the sheet never moved. A confident false-success is worse for
+the Device Connect story than an honest stall — so the grasp now confirms fabric-in-hand *before* the draw.
+
+- **`rl/deploy/bed_grasp_confirm.py` (`GraspConfirmMonitor`)** — baselines the **open** claw, then watches
+  the close on two signals already in the `brainco_bridge` telemetry (no harness change): per-finger
+  **touch-force rise** over baseline, and per-finger **proximity deviation** from baseline. Verdict =
+  *fabric present* if either signal clears its threshold on ≥`fingers_needed` fingers, else *empty grab*.
+  Two design choices worth recording: (1) the confirm fires at a **lower** touch rise (~15 u16) than the
+  grip's contact gate (40) — §10.7 found real soft-fabric grabs read only ~10–40, so the grip's own gate
+  barely fires on a true grab and can't be the empty-vs-fabric discriminator; **proximity** is the signal
+  the grip never used. (2) proximity sign is firmware-dependent, so the verdict keys on **|deviation|** from
+  baseline (direction-agnostic), and if proximity reads all-zero/garbage it degrades to touch-only — the
+  same defensive posture as `read_arm_tau`.
+- **Wiring.** `bed_grip_v1.py` runs the confirm during the close and logs a `GRASP VERDICT`. On an empty
+  verdict under **`--require-fabric`** it writes `/tmp/grab_empty`, skips `/tmp/sheet_gripped`, and releases;
+  `g1_bed_pull_v2.py` / `g1_bed_handoff_v1.py` break their grip-wait on `/tmp/grab_empty` (no draw on air,
+  no dead-wait to timeout); the orchestrator treats `/tmp/grab_empty` as an autonomous-attempt failure →
+  ask-the-human → handoff, exactly like a stall. The handoff's success check is also tightened (it wrote
+  `/tmp/draw_done` in both its drew and no-grip branches).
+- **Measure-only by default — calibration gates enforcement** (mirrors `--abort-on-stall`). Thresholds
+  (`--confirm-force-rise`, `--confirm-prox-dev`) are first-pass; until calibrated, the grip *logs* the
+  verdict but always proceeds. **Calibration procedure:** present the claw, run `bed_grip_v1.py` on ~5
+  closes on **air** and ~5 on **real sheet**, read the logged `peak_force_rise` / `peak_prox_dev` clusters,
+  set each threshold between the two clusters (and confirm proximity is non-zero and which way it moves),
+  *then* run with `--require-fabric` (orchestrator: same flag). Validated here by unit tests on the verdict
+  logic (empty / touch-fabric / proximity-fabric / dead-proximity-degrades / missing-fields) and a full
+  orchestrator `--dry --require-fabric --dry-fail-reason empty` pass through escalation → handoff; the
+  **hardware threshold calibration is the remaining gate** before `--require-fabric` runs live.
+
+**Open follow-up:** if both touch and proximity turn out marginal on the real sheet, a vision cue
+(fabric-in-hand) is the fallback — folded into the vision work already on the list.
 
 ## 11. Research, forums & references
 
