@@ -725,16 +725,31 @@ the Device Connect story than an honest stall — so the grasp now confirms fabr
   `/tmp/draw_done` in both its drew and no-grip branches).
 - **Measure-only by default — calibration gates enforcement** (mirrors `--abort-on-stall`). Thresholds
   (`--confirm-force-rise`, `--confirm-prox-dev`) are first-pass; until calibrated, the grip *logs* the
-  verdict but always proceeds. **Calibration procedure:** present the claw, run `bed_grip_v1.py` on ~5
-  closes on **air** and ~5 on **real sheet**, read the logged `peak_force_rise` / `peak_prox_dev` clusters,
-  set each threshold between the two clusters (and confirm proximity is non-zero and which way it moves),
-  *then* run with `--require-fabric` (orchestrator: same flag). Validated here by unit tests on the verdict
+  verdict but always proceeds. **Calibration is one command:** `rl/deploy/bed_grasp_calibrate.py --air 5
+  --sheet 5` runs five empty-claw closes and five real-sheet closes, captures the strongest-finger peak
+  touch-rise + proximity-deviation per trial, and **recommends** a `--confirm-force-rise` /
+  `--confirm-prox-dev` set midway between max(air) and min(sheet) — biased below min(sheet) so a slightly
+  weaker real grab still reads as fabric. It refuses to recommend a signal whose clusters **overlap**, and
+  flags proximity as **dead** if it reads zero throughout (→ fall back to touch-only, or to a vision cue).
+  Run it, then pass the recommended values with `--require-fabric` (orchestrator: same flag). Validated
+  here by unit tests on the verdict
   logic (empty / touch-fabric / proximity-fabric / dead-proximity-degrades / missing-fields) and a full
   orchestrator `--dry --require-fabric --dry-fail-reason empty` pass through escalation → handoff; the
   **hardware threshold calibration is the remaining gate** before `--require-fabric` runs live.
 
-**Open follow-up:** if both touch and proximity turn out marginal on the real sheet, a vision cue
-(fabric-in-hand) is the fallback — folded into the vision work already on the list.
+**Hardware reality, checked on-robot 2026-06-19/20:** the `brainco_bridge` TCP JSON exposes
+`left_touch_force` / `left_touch` / `left_touch_raw` but **does NOT emit `left_proximity`** (it reads
+the proximity registers internally but never publishes them), so `GraspConfirmMonitor` runs **touch-only**
+on this G1 as-is and degrades exactly as designed. Encouraging first data: **5 empty closes read a clean
+`[0,0,0,0,0]` force every time** (idle normal_force ≈ 0), even with the thumb fully opposed — so the
+*empty* side of the cluster is rock-solid zero; only the *sheet* side (does a light fabric press register
+≥ ~15 force-rise?) is still unmeasured. Two open options: (a) extend the bridge to publish proximity from
+reg 4200 (it already reads it) for a second signal, or (b) if touch on a light sheet proves marginal, a
+vision fabric-in-hand cue (folded into the vision work already on the list).
+
+**Open follow-up:** complete the sheet-side measurement using the PROVEN `bed_grip_v1.py` converging
+close (the grasp that worked on 2026-06-18), not isolated bench thumb poses; then set `--confirm-force-rise`
+from the air-vs-sheet split and enable `--require-fabric`.
 
 ## 11. Research, forums & references
 
