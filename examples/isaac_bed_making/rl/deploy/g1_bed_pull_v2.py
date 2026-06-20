@@ -28,7 +28,7 @@ import os
 import time
 
 from bed_deploy_common import ARM_JOINTS, ARM_LIMITS, LEFT_ARM, RIGHT_ARM, load, rc_root
-from bed_fail_detect import DrawResistanceMonitor, read_arm_tau
+from bed_fail_detect import DrawResistanceMonitor, read_arm_tau, read_waist, WAIST_JOINTS
 
 # Deterministic LEFT-arm lift waypoints (joint-space, rad). Principle: shoulder stays rolled WIDE
 # (high +roll abducts the left arm out to the side) while the elbow extends, so the arm rises and
@@ -56,7 +56,7 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
                      draw_s, draw_hold_s, blend_s, vmax_rad_s, hold_timeout_s,
                      arm_reached_file, gripped_file, draw_done_file, grasp_wrist_roll=None,
                      monitor=None, abort_on_stall=False, fail_file="/tmp/pull_failed",
-                     empty_file="/tmp/grab_empty", log=print):
+                     empty_file="/tmp/grab_empty", waist_joints=("waist_yaw_joint",), log=print):
     if not io.arm_abort():
         log("[pull2] abort not armed (release all controller buttons) — refusing")
         return False
@@ -115,10 +115,11 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
             if record:
                 traj.append(dict(cmdq))
             if monitor is not None:
-                m = monitor.update(state, cmdq, read_arm_tau(io, LEFT_ARM))
+                wt, wq = read_waist(io, waist_joints)
+                m = monitor.update(state, cmdq, read_arm_tau(io, LEFT_ARM), waist_taus=wt, waist_qs=wq)
                 if k % 20 == 0:
-                    log(f"[pull2] {label}: follow={m['follow']:.3f} dq={m['dq']:.3f} "
-                        f"tau={m['tau']:.2f} yaw={m['yaw']:.1f}")
+                    log(f"[pull2] {label}: waist_dtau={m['waist_dtau']:.2f} waist_dyaw={m['waist_dyaw']:.1f} "
+                        f"follow={m['follow']:.3f} dq={m['dq']:.3f} tau={m['tau']:.2f} base_yaw={m['yaw']:.1f}")
                 if m["tripped"] and abort_on_stall:
                     log(f"[pull2] STALL detected during {label} — stopping the pull early (anchored load)")
                     break
@@ -258,7 +259,15 @@ def main() -> None:
     ap.add_argument("--stall-tau", type=float, default=11.0,
                     help="joint-torque threshold — free pull ~7, anchored ~14 (cal 2026-06-18)")
     ap.add_argument("--stall-yaw", type=float, default=6.0,
-                    help="torso IMU yaw-drift threshold (deg) — logged only (base IMU misses the twist)")
+                    help="base IMU yaw-drift threshold (deg) — logged only (pelvis IMU misses the torso twist)")
+    ap.add_argument("--stall-waist-tau", type=float, default=None,
+                    help="PRIMARY anchored signal: waist torque DEVIATION (Nm) from draw-start, max over "
+                         "the monitored waist joints. With the firm grasp an anchored pull dumps into a "
+                         "torso TWIST (arm follow stays free-like) → the waist motor drives hard. "
+                         "Default None = measure-only (logged, not voted) until calibrated on hardware.")
+    ap.add_argument("--waist-dof", type=int, choices=[1, 3], default=1,
+                    help="waist DOF of THIS robot: 1 = 23-DOF G1 (waist_yaw only, default); 3 = 29-DOF G1 "
+                         "(adds waist_roll/pitch to catch off-axis load). Index 12 is waist_yaw on both.")
     ap.add_argument("--stall-sustain", type=float, default=0.5,
                     help="seconds a signal must stay over threshold to call it a stall (vs a transient)")
     ap.add_argument("--abort-on-stall", action="store_true",
@@ -287,7 +296,10 @@ def main() -> None:
     dep = pd.PolicyDeploy(contract, args.policy, io)
     monitor = DrawResistanceMonitor(LEFT_ARM, dep.dt, follow_thresh_rad=args.stall_follow,
                                     tau_thresh=args.stall_tau, yaw_thresh_deg=args.stall_yaw,
-                                    sustain_s=args.stall_sustain)
+                                    waist_tau_thresh=args.stall_waist_tau, sustain_s=args.stall_sustain)
+    waist_joints = WAIST_JOINTS[args.waist_dof]
+    print(f"[pull2] waist stall signal: {args.waist_dof}-DOF {waist_joints}  "
+          f"thr={'measure-only' if args.stall_waist_tau is None else args.stall_waist_tau}")
     try:
         if not args.assume_balancer_up:
             if io._high_level_service_alive() is False:
@@ -304,7 +316,7 @@ def main() -> None:
             arm_reached_file=args.arm_reached_file, gripped_file=args.gripped_file,
             draw_done_file=args.draw_done_file, grasp_wrist_roll=args.grasp_wrist_roll,
             monitor=monitor, abort_on_stall=args.abort_on_stall, fail_file=args.fail_file,
-            empty_file=args.empty_file,
+            empty_file=args.empty_file, waist_joints=waist_joints,
         )
     finally:
         io.shutdown()
