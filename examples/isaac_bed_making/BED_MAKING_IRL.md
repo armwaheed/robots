@@ -837,6 +837,67 @@ cover) before enabling `--abort-on-stall` — a firm free-sheet draw now peaks `
 above). (c) Proximity as a real second signal needs a closed-empty baseline. (d) Stiffer waist/torso-yaw
 to resist the ~5° accordion twist; and the robot still needs to **walk** the drawn sheet to the headboard.
 
+### 10.10 Hail Mary — LiDAR-gated autonomous approach, and a sheet-pull with gloriously messy telemetry (2026-06-21)
+
+![hero run — LiDAR-gated approach then RL sheet pull](https://github.com/armwaheed/robots/releases/download/hailmary-irl-media/hero.gif)
+
+*End to end, no human in the loop: the G1 uses its crown LiDAR to find the bed, walks itself to the left edge, reaches with the RL policy, pinches the sheet, and draws it. (GIF: the ~32 s policy-load wait is trimmed to ~5 s and the rest is ~1.7× for file size; the [full-rate 92 s raw capture](https://github.com/armwaheed/robots/releases/download/hailmary-irl-media/hailmary_hero_raw.mp4) keeps the wait.)*
+
+**The pivot — perception-gated, odom-free.** The earlier walk-to-bed used the vendor odometry (`walk_to` an absolute pose). On hardware the odom **drifted** — mid-session it reported a **1.1 m phantom jump** the robot never made, and a closed-loop `walk_to` chasing that stale target drove the robot **into the bed and nearly toppled it**. So the approach was rebuilt to close the loop on the **LiDAR-measured forward distance to the bed**, not on odom. From the side, `lidar_sight` sees the bed as a large flat plane at waist height; `g1_lidar_approach.py` reads the **nearest forward obstacle distance R** in a narrow corridor and creeps forward until R drops by the proven advance (R ≈ 1.12 → 0.40 m), with an **independent hard floor** that stops if anything comes within `hard_min_r`. Standing R is rock-steady — **1.12 m median, 4.3 cm spread over 24 samples** — so the creep is fully odom-independent and ram-safe.
+
+![perception-gated approach R(t)](media/irl/hm_approach.png)
+
+**A non-destructive abort, first.** Before driving a balancing biped autonomously again, we needed an abort that does **not** collapse the robot. The vendor controller's L2+B is a whole-body damp (the robot drops), and in **Regular / AI-Sport mode the handheld buttons fire vendor *gestures*, not a clean SDK abort latch** — confirmed in the deploy's own `confirm_abort_live` note ("that trap destabilized the robot once"). So the only safe non-destructive stop in this mode is a **commanded `StopMove`**. `g1_abort.py` gives the operator a held terminal: **press ENTER → `StopMove` + write `/tmp/ABORT`** → the robot halts to balance-stand (FSM 500), **upright, not damped**. The walk polls the same flag (`set_abort_source`) and self-stops within a tick. **Never a `kill -9`** — a hard kill can't run cleanup, leaving the last velocity latched on the topic (the leg-shotgun/spin-kick failure mode). Verified live: a slow in-place turn aborted after **8.7° of a commanded 90°**, robot still standing FSM 500.
+
+**The run** is continuous, one take: LiDAR-gated approach → the proven `--grasp-wrist-roll -1.33` RL pull (`g1_bed_pull_v2.py`). Legs on the vendor balancer throughout; arms via `rt/arm_sdk`; the RL policy owns the come-in / descend / draw.
+
+```mermaid
+sequenceDiagram
+    participant P as Perception · LiDAR
+    participant N as Navigator · DET
+    participant B as Vendor Balancer · FSM 500
+    participant A as Arm Overlay · DET
+    participant R as RL Policy · STOCH
+    participant G as Grasp + Touch
+    Note over B: legs stay on the vendor balancer the whole run (Regular mode)
+    P->>N: bed range R = 1.12 m (forward corridor)
+    loop ~10 Hz · odom-free
+        P->>N: R (closed loop on LiDAR)
+        N->>B: SetVelocity(vx 0.20) while R > target
+    end
+    P->>N: R = 0.40 m ≤ target
+    N->>B: StopMove  [state: AT_EDGE]
+    A->>A: blend overlay IN  [DET]
+    A->>R: hand off control  [DET → STOCH]
+    R->>R: reach → descend onto quilt  [STOCH: REACHING → AT_QUILT]
+    R->>G: arm reached — sequenced claw close
+    Note over G: touch pads read EMPTY — pinch on the finger SIDES
+    G-->>A: grip held (no pad signal)
+    R->>R: draw toward the head  [STOCH: DRAWING]
+    Note over B: pinch drags the sheet → torso twists 23.9°
+    R->>A: draw done  [state: RETRACTING]
+    A->>A: replay-reverse retract  [DET]
+    A->>B: SafeStop — blend out, damp the arm  [state: DAMPED]
+```
+
+**The hero grab — a real success the touch sensors swore was empty.** This is the honest, messy part, and it's the best part. The claw closed and the fabric-in-hand confirm reported **EMPTY — every front finger-pad read 0**:
+
+![grasp pads — touch false-negative](media/irl/hm_grasp_pads.png)
+
+…yet the robot **had** the sheet. It grabbed with the **sides and outsides of the index and middle fingers and the thumb — a pinch, not a pad press** — which the front-mounted touch pads cannot sense. The corroborating proof is in the **waist torque**: as the pinch dragged the sheet, the torso twisted to **23.9°** — versus **0.2°** on a "clean" earlier take, where the index pad fired 17 → FABRIC. Same task, two successes, wildly different telemetry:
+
+![waist twist — two successes, different stories](media/irl/hm_waist_twist.png)
+
+This is exactly the **real-world false-negative** a touch-only grasp confirm produces, and a clean illustration of why the deploy keeps the empty-grab check *measure-only*: the sensor said fail, the robot succeeded, and the **torso-twist signal is the tell** that fabric was loaded.
+
+![LiDAR top-down — start vs arrival](media/irl/hm_lidar_topdown.png)
+
+**Placement is the finicky last mile.** The robot side is dead repeatable; the grab lives in a ~2 cm window. R 0.38 m put the claw *onto* the mattress top (snag); R 0.47 m fell *short* (no contact); **R 0.40 m + a lofted fold under the claw** is the sweet spot. The approach lands R 0.40 ± a couple cm every run — the remaining variance is the sheet itself (frays, loft, exact placement), the same finickiness the early Tier-0 grabs showed.
+
+**Committed this session:** `g1_lidar_approach.py` (odom-free LiDAR-gated approach), `g1_abort.py` (ENTER-to-abort, Regular-mode-safe), `g1_walk_to.py` (abort-wired), `make_hailmary_charts.py` (these figures), and `g1_waist_hold_ref.py` (a clean-room reference for the waist-stiffness fix below). Run telemetry is under `data/irl_hailmary/` — dirty data and all. All tools went through a code-review pass (guarded cleanup paths, the gait-speed floor, an EOF-safe abort).
+
+**Open items / next session.** **(a) TOP PRIORITY — a Device Connect robot↔human comms test** with the human on the Bluetooth headset, to record the dashboard showing the human-robot interaction. **(b)** Calibrate the **`waist_yaw` stiffness hold** (`g1_waist_hold_ref.py`) to absorb the draw twist — incrementally, low kp first, torque clamp ≤ 50 N·m (actuator limit 88). **(c)** Kill the **~32 s policy-load lag** by pre-warming the pull (policy load + DDS + loco prime) during the walk and triggering the lift on arrival. **(d)** Publish a second grasp signal (LiDAR `proximity` or a vision cue) so the confirm isn't touch-only — it would have called this hero grab empty.
+
 ## 11. Research, forums & references
 
 **Sim-to-real RL — observation & training:**
