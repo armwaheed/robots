@@ -11,7 +11,7 @@
   "hops": [
     {
       "seq": 1,
-      "t_ms": 470.0,
+      "t_ms": 35791.1,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -26,7 +26,7 @@
     },
     {
       "seq": 2,
-      "t_ms": 470.3,
+      "t_ms": 35791.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -42,7 +42,7 @@
     },
     {
       "seq": 3,
-      "t_ms": 470.3,
+      "t_ms": 35791.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -58,7 +58,7 @@
     },
     {
       "seq": 4,
-      "t_ms": 470.3,
+      "t_ms": 35791.4,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -74,7 +74,7 @@
     },
     {
       "seq": 5,
-      "t_ms": 470.5,
+      "t_ms": 35791.5,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -89,7 +89,7 @@
     },
     {
       "seq": 6,
-      "t_ms": 470.5,
+      "t_ms": 35791.5,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -104,7 +104,7 @@
     },
     {
       "seq": 7,
-      "t_ms": 470.8,
+      "t_ms": 35791.7,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -120,7 +120,7 @@
     },
     {
       "seq": 8,
-      "t_ms": 470.8,
+      "t_ms": 35791.7,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -136,7 +136,7 @@
     },
     {
       "seq": 9,
-      "t_ms": 470.8,
+      "t_ms": 35791.7,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -152,7 +152,7 @@
     },
     {
       "seq": 10,
-      "t_ms": 471.0,
+      "t_ms": 35791.9,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -167,7 +167,7 @@
     },
     {
       "seq": 11,
-      "t_ms": 797.5,
+      "t_ms": 89948.1,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -178,11 +178,11 @@
       "payload": {
         "corner": "D"
       },
-      "effect": "r0 grips the D head corner and starts its draw"
+      "effect": "r0 grips the D head corner of the cloth"
     },
     {
       "seq": 12,
-      "t_ms": 797.8,
+      "t_ms": 89948.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -197,7 +197,7 @@
     },
     {
       "seq": 13,
-      "t_ms": 797.8,
+      "t_ms": 89948.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -212,7 +212,7 @@
     },
     {
       "seq": 14,
-      "t_ms": 797.8,
+      "t_ms": 89948.4,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -227,7 +227,7 @@
     },
     {
       "seq": 15,
-      "t_ms": 797.9,
+      "t_ms": 89948.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -245,7 +245,7 @@
     },
     {
       "seq": 16,
-      "t_ms": 797.9,
+      "t_ms": 89948.4,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -263,7 +263,7 @@
     },
     {
       "seq": 17,
-      "t_ms": 797.9,
+      "t_ms": 89948.4,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -281,7 +281,7 @@
     },
     {
       "seq": 18,
-      "t_ms": 798.0,
+      "t_ms": 89948.6,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -296,7 +296,7 @@
     },
     {
       "seq": 19,
-      "t_ms": 798.0,
+      "t_ms": 89948.6,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -307,11 +307,11 @@
       "payload": {
         "corner": "A"
       },
-      "effect": "r1 grips the A head corner and starts its draw"
+      "effect": "r1 grips the A head corner of the cloth"
     },
     {
       "seq": 20,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -326,7 +326,7 @@
     },
     {
       "seq": 21,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -341,7 +341,7 @@
     },
     {
       "seq": 22,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -356,7 +356,7 @@
     },
     {
       "seq": 23,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -374,7 +374,7 @@
     },
     {
       "seq": 24,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -392,7 +392,7 @@
     },
     {
       "seq": 25,
-      "t_ms": 798.3,
+      "t_ms": 89948.9,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -410,7 +410,7 @@
     },
     {
       "seq": 26,
-      "t_ms": 798.5,
+      "t_ms": 89949.1,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -425,7 +425,7 @@
     },
     {
       "seq": 27,
-      "t_ms": 872.6,
+      "t_ms": 205508.5,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -441,7 +441,7 @@
     },
     {
       "seq": 28,
-      "t_ms": 872.9,
+      "t_ms": 205508.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -459,7 +459,7 @@
     },
     {
       "seq": 29,
-      "t_ms": 873.0,
+      "t_ms": 205508.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -477,7 +477,7 @@
     },
     {
       "seq": 30,
-      "t_ms": 873.0,
+      "t_ms": 205508.8,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -495,7 +495,7 @@
     },
     {
       "seq": 31,
-      "t_ms": 873.0,
+      "t_ms": 205508.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -511,7 +511,7 @@
     },
     {
       "seq": 32,
-      "t_ms": 873.0,
+      "t_ms": 205508.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -527,7 +527,7 @@
     },
     {
       "seq": 33,
-      "t_ms": 873.0,
+      "t_ms": 205508.8,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -543,7 +543,7 @@
     },
     {
       "seq": 34,
-      "t_ms": 873.1,
+      "t_ms": 205508.9,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -558,7 +558,7 @@
     },
     {
       "seq": 35,
-      "t_ms": 873.2,
+      "t_ms": 205508.9,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -574,7 +574,7 @@
     },
     {
       "seq": 36,
-      "t_ms": 873.4,
+      "t_ms": 205509.1,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -591,7 +591,7 @@
     },
     {
       "seq": 37,
-      "t_ms": 873.4,
+      "t_ms": 205509.1,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -608,7 +608,7 @@
     },
     {
       "seq": 38,
-      "t_ms": 873.4,
+      "t_ms": 205509.1,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -625,7 +625,7 @@
     },
     {
       "seq": 39,
-      "t_ms": 873.4,
+      "t_ms": 205509.1,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -640,7 +640,7 @@
     },
     {
       "seq": 40,
-      "t_ms": 1274.1,
+      "t_ms": 731119.8,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -655,7 +655,7 @@
     },
     {
       "seq": 41,
-      "t_ms": 1274.4,
+      "t_ms": 731120.0,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -671,7 +671,7 @@
     },
     {
       "seq": 42,
-      "t_ms": 1274.4,
+      "t_ms": 731120.0,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -687,7 +687,7 @@
     },
     {
       "seq": 43,
-      "t_ms": 1274.4,
+      "t_ms": 731120.0,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -703,7 +703,7 @@
     },
     {
       "seq": 44,
-      "t_ms": 1274.5,
+      "t_ms": 731120.0,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -718,7 +718,7 @@
     },
     {
       "seq": 45,
-      "t_ms": 1274.5,
+      "t_ms": 731120.0,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -733,7 +733,7 @@
     },
     {
       "seq": 46,
-      "t_ms": 1274.5,
+      "t_ms": 731120.1,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -748,7 +748,7 @@
     },
     {
       "seq": 47,
-      "t_ms": 1274.5,
+      "t_ms": 731120.1,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -763,7 +763,7 @@
     },
     {
       "seq": 48,
-      "t_ms": 1274.5,
+      "t_ms": 731120.1,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -778,7 +778,7 @@
     },
     {
       "seq": 49,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -794,7 +794,7 @@
     },
     {
       "seq": 50,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -810,7 +810,7 @@
     },
     {
       "seq": 51,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -826,7 +826,7 @@
     },
     {
       "seq": 52,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -841,7 +841,7 @@
     },
     {
       "seq": 53,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -856,7 +856,7 @@
     },
     {
       "seq": 54,
-      "t_ms": 1274.7,
+      "t_ms": 731120.3,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -871,7 +871,7 @@
     },
     {
       "seq": 55,
-      "t_ms": 1274.8,
+      "t_ms": 731120.5,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -886,7 +886,7 @@
     },
     {
       "seq": 56,
-      "t_ms": 1274.8,
+      "t_ms": 731120.5,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -901,7 +901,7 @@
     },
     {
       "seq": 57,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -917,7 +917,7 @@
     },
     {
       "seq": 58,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -933,7 +933,7 @@
     },
     {
       "seq": 59,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -949,7 +949,7 @@
     },
     {
       "seq": 60,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -964,7 +964,7 @@
     },
     {
       "seq": 61,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -979,7 +979,7 @@
     },
     {
       "seq": 62,
-      "t_ms": 1275.0,
+      "t_ms": 731120.8,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -994,7 +994,7 @@
     },
     {
       "seq": 63,
-      "t_ms": 1275.2,
+      "t_ms": 731121.0,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -1009,7 +1009,7 @@
     },
     {
       "seq": 64,
-      "t_ms": 1275.2,
+      "t_ms": 731121.0,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -1024,7 +1024,7 @@
     },
     {
       "seq": 65,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1040,7 +1040,7 @@
     },
     {
       "seq": 66,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1056,7 +1056,7 @@
     },
     {
       "seq": 67,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -1072,7 +1072,7 @@
     },
     {
       "seq": 68,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1087,7 +1087,7 @@
     },
     {
       "seq": 69,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1102,7 +1102,7 @@
     },
     {
       "seq": 70,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -1117,7 +1117,7 @@
     },
     {
       "seq": 71,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1132,7 +1132,7 @@
     },
     {
       "seq": 72,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.publish",
       "plane": "in-process",
       "transport": "loopback",
@@ -1147,7 +1147,7 @@
     },
     {
       "seq": 73,
-      "t_ms": 1275.5,
+      "t_ms": 731121.3,
       "kind": "event.deliver",
       "plane": "in-process",
       "transport": "loopback",
@@ -1162,7 +1162,7 @@
     },
     {
       "seq": 74,
-      "t_ms": 1275.7,
+      "t_ms": 731121.8,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -1177,7 +1177,7 @@
     },
     {
       "seq": 75,
-      "t_ms": 1658.7,
+      "t_ms": 774141.7,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -1190,7 +1190,7 @@
     },
     {
       "seq": 76,
-      "t_ms": 1659.1,
+      "t_ms": 774142.0,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",
@@ -1205,7 +1205,7 @@
     },
     {
       "seq": 77,
-      "t_ms": 1659.1,
+      "t_ms": 774142.0,
       "kind": "rpc.call",
       "plane": "in-process",
       "transport": "loopback",
@@ -1218,7 +1218,7 @@
     },
     {
       "seq": 78,
-      "t_ms": 1659.5,
+      "t_ms": 774142.2,
       "kind": "rpc.return",
       "plane": "in-process",
       "transport": "loopback",

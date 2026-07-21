@@ -73,6 +73,29 @@ Export TorchScript + ONNX. The Newton demo drives it exactly like the walking po
 (newton_g1_locomotion pattern): build obs in the SAME order, reorder by joint NAME, action*scale +
 default → joint_target_pos. Validate the obs width against the exported policy before the first step.
 
+## Deploy-side: the cloth, and what it says about the checkpoint
+
+The demo deploys against a real deformable sheet (MuJoCo `flexcomp`, 504 verts) rather than a rigid
+cover, which turns the "hold under load" claim into a measurement instead of an assertion. What the
+cloth exposed about this checkpoint:
+
+- **~0.10 m of headward palm travel per stroke** is the hard ceiling (unchanged from the rigid-cover
+  measurement — it is the policy, not the payload). Six hand-over-hand strokes draw the sheet's head
+  edge ~0.3 m up the bed; each stroke transfers less than the last as more of the sheet comes taut.
+- **A single grip point is not enough** to move a 2.26 m-wide sheet: it stretches the cloth locally
+  (6.6 cm of vertex travel → 2 cm of sheet). The demo grips a handful (8 vertices, 0.3 m radius),
+  which is also what a hand does. A policy trained with the cloth in the loop could learn *where* to
+  grab; this one cannot, since it never saw cloth.
+- **Sheet stiffness is capped by the training timestep.** A sheet stiff enough to transmit a pull the
+  way real cotton does (`young` 2e5) is unstable at the 5 ms step the policy trained at, and dropping
+  the sim to 2 ms to fix that puts the policy off its marks within one rollout. So the shipped sheet is
+  softer than real cloth (`young` 5e4) and absorbs part of every stroke in stretch. **Retraining at a
+  smaller timestep is the clean fix** and should be bundled with the wider-`ReachCommand` retrain below.
+- The next training iteration should therefore: widen the `ReachCommand` box for a full-length draw,
+  train at the smaller step, and — if cloth-in-the-loop training is affordable — replace the scripted
+  `apply_reach_force` wrench with the actual sheet, so the force the critic sees is the force the sheet
+  applies.
+
 ## Milestones
 
 1. Cartpole `zero_agent --physics newton_mjwarp` runs on the Spark (install viability). ← gating
