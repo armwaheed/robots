@@ -1,0 +1,1235 @@
+{
+  "plane": "in-process",
+  "transport": "loopback",
+  "profile": "WIRE",
+  "summary": {
+    "rpc.call": 12,
+    "event.publish": 36,
+    "event.deliver": 18,
+    "rpc.return": 12
+  },
+  "hops": [
+    {
+      "seq": 1,
+      "t_ms": 35791.1,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "walkToNextCorner",
+      "payload": {
+        "direction": "approach"
+      },
+      "effect": "r0 moves to its head-side corner D"
+    },
+    {
+      "seq": 2,
+      "t_ms": 35791.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 3,
+      "t_ms": 35791.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 4,
+      "t_ms": 35791.4,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 5,
+      "t_ms": 35791.5,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "walkToNextCorner",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #1"
+    },
+    {
+      "seq": 6,
+      "t_ms": 35791.5,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "walkToNextCorner",
+      "payload": {
+        "direction": "approach"
+      },
+      "effect": "r1 moves to its head-side corner A"
+    },
+    {
+      "seq": 7,
+      "t_ms": 35791.7,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 8,
+      "t_ms": 35791.7,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 9,
+      "t_ms": 35791.7,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "walkingTo",
+      "payload": {
+        "corner": "SW",
+        "direction": "approach"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 10,
+      "t_ms": 35791.9,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "walkToNextCorner",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #6"
+    },
+    {
+      "seq": 11,
+      "t_ms": 89948.1,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "pickUpBedSheet",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": "r0 grips the D head corner of the cloth"
+    },
+    {
+      "seq": 12,
+      "t_ms": 89948.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 13,
+      "t_ms": 89948.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 14,
+      "t_ms": 89948.4,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 15,
+      "t_ms": 89948.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "D",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 16,
+      "t_ms": 89948.4,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "D",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 17,
+      "t_ms": 89948.4,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "D",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 18,
+      "t_ms": 89948.6,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "pickUpBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #11"
+    },
+    {
+      "seq": 19,
+      "t_ms": 89948.6,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "pickUpBedSheet",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": "r1 grips the A head corner of the cloth"
+    },
+    {
+      "seq": 20,
+      "t_ms": 89948.9,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 21,
+      "t_ms": 89948.9,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 22,
+      "t_ms": 89948.9,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "claimCorner",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 23,
+      "t_ms": 89948.9,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "A",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 24,
+      "t_ms": 89948.9,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "A",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 25,
+      "t_ms": 89948.9,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "cornerHeld",
+      "payload": {
+        "corner": "A",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "effect": ""
+    },
+    {
+      "seq": 26,
+      "t_ms": 89949.1,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "pickUpBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #19"
+    },
+    {
+      "seq": 27,
+      "t_ms": 205508.5,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "askForHelp",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side"
+      },
+      "effect": "broadcasts helpRequested; r1's @on handler fires and it auto-offers"
+    },
+    {
+      "seq": 28,
+      "t_ms": 205508.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "helpRequested",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side",
+        "requester": "beta-unitree-g1-humanoid-0",
+        "target": ""
+      },
+      "effect": ""
+    },
+    {
+      "seq": 29,
+      "t_ms": 205508.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "helpRequested",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side",
+        "requester": "beta-unitree-g1-humanoid-0",
+        "target": ""
+      },
+      "effect": ""
+    },
+    {
+      "seq": 30,
+      "t_ms": 205508.8,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "helpRequested",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side",
+        "requester": "beta-unitree-g1-humanoid-0",
+        "target": ""
+      },
+      "effect": ""
+    },
+    {
+      "seq": 31,
+      "t_ms": 205508.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "askAssist",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 32,
+      "t_ms": 205508.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "askAssist",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 33,
+      "t_ms": 205508.8,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "askAssist",
+      "payload": {
+        "corner": "D",
+        "reason": "squaring my side"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 34,
+      "t_ms": 205508.9,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "askForHelp",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #27"
+    },
+    {
+      "seq": 35,
+      "t_ms": 205508.9,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "offerHelp",
+      "payload": {
+        "target": "beta-unitree-g1-humanoid-0",
+        "corner": "D"
+      },
+      "effect": "r1 answers; both draw their head corners together"
+    },
+    {
+      "seq": 36,
+      "t_ms": 205509.1,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "helpOffered",
+      "payload": {
+        "corner": "D",
+        "target": "beta-unitree-g1-humanoid-0",
+        "helper": "beta-unitree-g1-humanoid-1"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 37,
+      "t_ms": 205509.1,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "helpOffered",
+      "payload": {
+        "corner": "D",
+        "target": "beta-unitree-g1-humanoid-0",
+        "helper": "beta-unitree-g1-humanoid-1"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 38,
+      "t_ms": 205509.1,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "helpOffered",
+      "payload": {
+        "corner": "D",
+        "target": "beta-unitree-g1-humanoid-0",
+        "helper": "beta-unitree-g1-humanoid-1"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 39,
+      "t_ms": 205509.1,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "offerHelp",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #35"
+    },
+    {
+      "seq": 40,
+      "t_ms": 731119.8,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "putDownBedSheet",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": "r0 reports corner D squared over its bed corner"
+    },
+    {
+      "seq": 41,
+      "t_ms": 731120.0,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "D",
+        "bed_corner": "SW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 42,
+      "t_ms": 731120.0,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "D",
+        "bed_corner": "SW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 43,
+      "t_ms": 731120.0,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "D",
+        "bed_corner": "SW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 44,
+      "t_ms": 731120.0,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 45,
+      "t_ms": 731120.0,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 46,
+      "t_ms": 731120.1,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "D"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 47,
+      "t_ms": 731120.1,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "putDownBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #40"
+    },
+    {
+      "seq": 48,
+      "t_ms": 731120.1,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "putDownBedSheet",
+      "payload": {
+        "corner": "C"
+      },
+      "effect": "r0 reports corner C squared over its bed corner"
+    },
+    {
+      "seq": 49,
+      "t_ms": 731120.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "C",
+        "bed_corner": "SE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 50,
+      "t_ms": 731120.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "C",
+        "bed_corner": "SE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 51,
+      "t_ms": 731120.3,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "C",
+        "bed_corner": "SE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 52,
+      "t_ms": 731120.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "C"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 53,
+      "t_ms": 731120.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "C"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 54,
+      "t_ms": 731120.3,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "C"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 55,
+      "t_ms": 731120.5,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "putDownBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #48"
+    },
+    {
+      "seq": 56,
+      "t_ms": 731120.5,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "putDownBedSheet",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": "r1 reports corner A squared over its bed corner"
+    },
+    {
+      "seq": 57,
+      "t_ms": 731120.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "A",
+        "bed_corner": "NW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 58,
+      "t_ms": 731120.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "A",
+        "bed_corner": "NW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 59,
+      "t_ms": 731120.8,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "A",
+        "bed_corner": "NW"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 60,
+      "t_ms": 731120.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 61,
+      "t_ms": 731120.8,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 62,
+      "t_ms": 731120.8,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "A"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 63,
+      "t_ms": 731121.0,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "putDownBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #56"
+    },
+    {
+      "seq": 64,
+      "t_ms": 731121.0,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "putDownBedSheet",
+      "payload": {
+        "corner": "B"
+      },
+      "effect": "r1 reports corner B squared over its bed corner"
+    },
+    {
+      "seq": 65,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "B",
+        "bed_corner": "NE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 66,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "B",
+        "bed_corner": "NE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 67,
+      "t_ms": 731121.3,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "cornerPlaced",
+      "payload": {
+        "corner": "B",
+        "bed_corner": "NE"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 68,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "B"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 69,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "B"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 70,
+      "t_ms": 731121.3,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "cornerReleased",
+      "payload": {
+        "corner": "B"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 71,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "goalReached",
+      "payload": {
+        "goal": "the bed is made"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 72,
+      "t_ms": 731121.3,
+      "kind": "event.publish",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "*",
+      "name": "goalReached",
+      "payload": {
+        "goal": "the bed is made"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 73,
+      "t_ms": 731121.3,
+      "kind": "event.deliver",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "goalReached",
+      "payload": {
+        "goal": "the bed is made"
+      },
+      "effect": ""
+    },
+    {
+      "seq": 74,
+      "t_ms": 731121.8,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "putDownBedSheet",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #64"
+    },
+    {
+      "seq": 75,
+      "t_ms": 774141.7,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-0",
+      "name": "getGoalState",
+      "payload": {},
+      "effect": "read the shared goal state"
+    },
+    {
+      "seq": 76,
+      "t_ms": 774142.0,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-0",
+      "dst": "sim",
+      "name": "getGoalState",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #75"
+    },
+    {
+      "seq": 77,
+      "t_ms": 774142.0,
+      "kind": "rpc.call",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "sim",
+      "dst": "beta-unitree-g1-humanoid-1",
+      "name": "getGoalState",
+      "payload": {},
+      "effect": "read the shared goal state"
+    },
+    {
+      "seq": 78,
+      "t_ms": 774142.2,
+      "kind": "rpc.return",
+      "plane": "in-process",
+      "transport": "loopback",
+      "profile": "WIRE",
+      "src": "beta-unitree-g1-humanoid-1",
+      "dst": "sim",
+      "name": "getGoalState",
+      "payload": {
+        "ok": true
+      },
+      "effect": "in reply to #77"
+    }
+  ]
+}
